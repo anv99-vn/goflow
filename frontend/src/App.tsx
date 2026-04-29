@@ -156,6 +156,15 @@ export default function App() {
     }
   }, [activeFuncId]);
 
+  // Re-apply graph when hiddenFuncIds changes
+  useEffect(() => {
+    if (currentGraph && viewMode === "function") {
+      const { nodes: n, edges: e } = funcGraphToFlow(currentGraph, funcPositions, activeFuncId, hiddenFuncIds, deleteFuncNode);
+      setNodes(n);
+      setEdges(e);
+    }
+  }, [hiddenFuncIds, currentGraph, viewMode, funcPositions, activeFuncId, deleteFuncNode, setNodes, setEdges]);
+
   const applyGraph = useCallback(
     (graph: Graph, vm: ViewMode = "package", savedPos?: SavedPositions) => {
       setCurrentGraph(graph);
@@ -551,12 +560,7 @@ export default function App() {
           {stats.structs > 0 && <StatBadge label="structs" value={stats.structs} color="#a78bfa" />}
           {stats.hidden > 0 && (
             <button
-              onClick={() => {
-                setHiddenFuncIds(new Set());
-                if (currentGraph && viewMode === "function") {
-                  applyGraph(currentGraph, "function");
-                }
-              }}
+              onClick={() => setHiddenFuncIds(new Set())}
               style={{
                 background: "#dc2626",
                 color: "#fff",

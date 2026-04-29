@@ -4,6 +4,24 @@ All notable changes to this project are documented here. Format follows [Convent
 
 ## 2026-04-29
 
+### [e88b2df](https://github.com/anv99-vn/goflow/commit/e88b2df) - feat: add struct nodes with detail panel and function integration
+
+#### Backend
+- Add `StructInfo`, `StructNode`, `StructEdge` types to analyzer
+- Add `extractStructs()` function to parse struct definitions from Go AST
+- Add `buildStructGraph()` to create struct nodes and detect struct usage in functions
+- Add `applyStructLayout()` to position struct nodes near their package
+- Add `structs` field to `pkgInfo` and `Node` structs
+
+#### Frontend
+- Add `StructNode`, `StructEdge` types to `types.ts`
+- Create `StructNode.tsx` component with purple theme for graph nodes
+- Create `StructDetailPanel.tsx` for viewing struct fields
+- Update `FunctionDetailPanel.tsx` to show clickable struct references
+- Position `StructDetailPanel` beside `FunctionDetailPanel` when opened from function view
+- Add struct stats badge to header stats bar
+- Update MiniMap to color struct nodes purple
+
 ### [e52cda2](https://github.com/anv99-vn/goflow/commit/e52cda2d) - feat: function detail panel, missing node detection, saved positions, syntax highlighting
 
 #### Backend

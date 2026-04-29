@@ -10,8 +10,13 @@ const COLORS = {
 
 const ACTIVE_GLOW = "#f59e0b"; // Amber glow for active (when detail panel is open)
 
+interface FunctionNodeData extends FuncNode {
+  isActive?: boolean;
+  onDelete?: (id: string) => void;
+}
+
 export function FunctionNodeComponent({ data }: NodeProps) {
-  const nodeData = data as unknown as FuncNode & { isActive?: boolean };
+  const nodeData = data as unknown as FunctionNodeData;
   const c = nodeData.missing ? COLORS.missing : nodeData.label === "main" ? COLORS.main : COLORS.fn;
   const isActive = nodeData.isActive === true;
 
@@ -28,9 +33,43 @@ export function FunctionNodeComponent({ data }: NodeProps) {
         color: "#e2e8f0",
         boxShadow: isActive ? `0 0 16px ${ACTIVE_GLOW}88` : `0 0 0 1px ${c.border}22`,
         transition: "box-shadow 0.2s, border-color 0.2s",
+        position: "relative",
       }}
     >
       <Handle type="target" position={Position.Left} style={{ background: c.accent, border: "none" }} />
+
+      {/* Delete button */}
+      {nodeData.label !== "main" && (
+        <button
+          onClick={(e) => {
+            e.stopPropagation();
+            nodeData.onDelete?.(nodeData.id);
+          }}
+          style={{
+            position: "absolute",
+            top: -8,
+            right: -8,
+            width: 20,
+            height: 20,
+            borderRadius: "50%",
+            background: "#dc2626",
+            border: "2px solid #1e293b",
+            color: "#fff",
+            fontSize: 12,
+            fontWeight: 700,
+            cursor: "pointer",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            zIndex: 10,
+            padding: 0,
+            lineHeight: 1,
+          }}
+          title="Delete function node"
+        >
+          ×
+        </button>
+      )}
 
       {/* Header */}
       <div

@@ -87,25 +87,33 @@ function persistFuncPositions(pos: SavedPositions) {
 function funcGraphToFlow(
   graph: Graph,
   savedPos: SavedPositions = {},
-  activeId: string | null = null
+  activeId: string | null = null,
+  hiddenIds?: Set<string>,
+  deleteFunc?: (id: string) => void
 ): { nodes: Node[]; edges: Edge[] } {
-  const nodes: Node[] = (graph.functionNodes ?? []).map((n) => ({
-    id: n.id,
-    type: "functionNode",
-    position: savedPos[n.id] ?? n.position,
-    data: { ...n, isActive: n.id === activeId },
-  }));
+  const hidden = hiddenIds ?? new Set();
+  const nodes: Node[] = (graph.functionNodes ?? [])
+    .filter((n) => !hidden.has(n.id))
+    .map((n) => ({
+      id: n.id,
+      type: "functionNode",
+      position: savedPos[n.id] ?? n.position,
+      data: { ...n, isActive: n.id === activeId, onDelete: deleteFunc },
+    }));
 
-  const edges: Edge[] = (graph.functionEdges ?? []).map((e) => ({
-    id: e.id,
-    source: e.source,
-    target: e.target,
-    label: e.label,
-    markerEnd: { type: MarkerType.ArrowClosed, color: "#38bdf8" },
-    style: { stroke: "#38bdf8" },
-    labelStyle: { fill: "#7dd3fc", fontSize: 11 },
-    labelBgStyle: { fill: "#0c2540" },
-  }));
+  const visibleIds = new Set(nodes.map((n) => n.id));
+  const edges: Edge[] = (graph.functionEdges ?? [])
+    .filter((e) => visibleIds.has(e.source) && visibleIds.has(e.target))
+    .map((e) => ({
+      id: e.id,
+      source: e.source,
+      target: e.target,
+      label: e.label,
+      markerEnd: { type: MarkerType.ArrowClosed, color: "#38bdf8" },
+      style: { stroke: "#38bdf8" },
+      labelStyle: { fill: "#7dd3fc", fontSize: 11 },
+      labelBgStyle: { fill: "#0c2540" },
+    }));
 
   return { nodes, edges };
 }
@@ -126,6 +134,7 @@ export default function App() {
   const [selectedStructNode, setSelectedStructNode] = useState<StructNode | null>(null);
   const [activeFuncId, setActiveFuncId] = useState<string | null>(null);
   const [funcPositions, setFuncPositions] = useState<SavedPositions>(loadFuncPositions);
+  const [hiddenFuncIds, setHiddenFuncIds] = useState<Set<string>>(new Set());
 
   const [nodes, setNodes, onNodesChange] = useNodesState<Node>([]);
   const [edges, setEdges, onEdgesChange] = useEdgesState<Edge>([]);
@@ -134,16 +143,29 @@ export default function App() {
     [setEdges]
   );
 
+  const deleteFuncNode = useCallback((id: string) => {
+    setHiddenFuncIds((prev) => {
+      const next = new Set(prev);
+      next.add(id);
+      return next;
+    });
+    // Close detail panel if viewing deleted node
+    if (activeFuncId === id) {
+      setSelectedFuncNode(null);
+      setActiveFuncId(null);
+    }
+  }, [activeFuncId]);
+
   const applyGraph = useCallback(
     (graph: Graph, vm: ViewMode = "package", savedPos?: SavedPositions) => {
       setCurrentGraph(graph);
       const pos = savedPos ?? funcPositions;
       const { nodes: n, edges: e } =
-        vm === "function" ? funcGraphToFlow(graph, pos, activeFuncId) : graphToFlow(graph, selectedStructNode);
+        vm === "function" ? funcGraphToFlow(graph, pos, activeFuncId, hiddenFuncIds, deleteFuncNode) : graphToFlow(graph, selectedStructNode);
       setNodes(n);
       setEdges(e);
     },
-    [setNodes, setEdges, funcPositions, selectedStructNode]
+    [setNodes, setEdges, funcPositions, selectedStructNode, activeFuncId, hiddenFuncIds, deleteFuncNode]
   );
 
   const analyze = useCallback(async () => {
@@ -298,8 +320,9 @@ export default function App() {
     const entrypoints = nodes.filter((n) => (n.data as any).type === "entrypoint").length;
     const packages = nodes.filter((n) => (n.data as any).type === "package").length;
     const structs = nodes.filter((n) => n.type === "structNode").length;
-    return { entrypoints, packages, structs, edges: edges.length };
-  }, [nodes, edges]);
+    const hidden = hiddenFuncIds.size;
+    return { entrypoints, packages, structs, hidden, edges: edges.length };
+  }, [nodes, edges, hiddenFuncIds]);
 
   const switchMode = (m: Mode) => {
     setMode(m);
@@ -526,6 +549,29 @@ export default function App() {
           <StatBadge label="entrypoints" value={stats.entrypoints} color="#6366f1" />
           <StatBadge label="packages" value={stats.packages} color="#0ea5e9" />
           {stats.structs > 0 && <StatBadge label="structs" value={stats.structs} color="#a78bfa" />}
+          {stats.hidden > 0 && (
+            <button
+              onClick={() => {
+                setHiddenFuncIds(new Set());
+                if (currentGraph && viewMode === "function") {
+                  applyGraph(currentGraph, "function");
+                }
+              }}
+              style={{
+                background: "#dc2626",
+                color: "#fff",
+                border: "none",
+                borderRadius: 5,
+                padding: "2px 8px",
+                fontSize: 11,
+                cursor: "pointer",
+                fontWeight: 600,
+              }}
+              title="Restore all hidden functions"
+            >
+              restore {stats.hidden} hidden
+            </button>
+          )}
           <StatBadge label="edges" value={stats.edges} color="#475569" />
 
           <div style={{ flex: 1 }} />

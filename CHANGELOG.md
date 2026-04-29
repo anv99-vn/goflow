@@ -4,25 +4,24 @@ All notable changes to this project are documented here. Format follows [Convent
 
 ## 2026-04-29
 
-### [2c91a22](https://github.com/anomalyco/goflow/commit/2c91a22) - feat: add DetailPanel UI component and implement automated development startup scripts with port management
-
-### [8df3b24](https://github.com/anomalyco/goflow/commit/8df3b24) - feat: function detail panel, missing node detection, saved positions, syntax highlighting
+### [e52cda2](https://github.com/anv99-vn/goflow/commit/e52cda2d) - feat: function detail panel, missing node detection, saved positions, syntax highlighting
 
 #### Backend
 - Add `FuncNode.Missing` field: calls to undefined functions (non-builtins) create red "missing" nodes in the function graph
 - Add `goBuiltins` map to exclude append/len/make/etc. from missing detection
+- Add `goPredeclaredTypes` map to filter out type cast functions (string, float64, int, etc.) from function graph
 - Add `FuncNode.Body` field populated from go/printer for source display
 - Invert layout direction: entrypoint (main) on right, dependencies on left
 
 #### Frontend
 - `FunctionDetailPanel.tsx`: click a function node to see full syntax-highlighted source code (react-syntax-highlighter with PrismLight + Go grammar)
-- `FunctionNode.tsx`: red border/bg + "missing" badge for undefined functions
-- `App.tsx`: save dragged node positions to localStorage per node ID; restore on re-analyze
+- `FunctionNode.tsx`: red border/bg + "missing" badge for undefined functions; amber glow (`#f59e0b`) for active function (when detail panel is open)
+- `App.tsx`: save dragged node positions to localStorage per node ID; restore on re-analyze; track `activeFuncId` for function highlight state
 - `types.ts`: FuncNode.body and FuncNode.missing fields
 
 ---
 
-### [c88212d](https://github.com/anomalyco/goflow/commit/c88212d) - feat: add function-level call graph and multi-file upload improvements
+### [a75cdfd](https://github.com/anv-99-vn/goflow/commit/a75cdfd) - feat: add function-level call graph and multi-file upload improvements
 
 #### Backend
 - Add `FuncNode`/`FuncEdge` structs and `Graph.FunctionNodes`/`FunctionEdges` fields
@@ -42,11 +41,11 @@ All notable changes to this project are documented here. Format follows [Convent
 
 ---
 
-### [aeca9e7](https://github.com/anomalyco/goflow/commit/aeca9e7) - docs: add CLAUDE.md with project architecture and build instructions
+### [aeca9e7](https://github.com/anv-99-vn/goflow/commit/aeca9e7) - docs: add CLAUDE.md with project architecture and build instructions
 
 ---
 
-### [7ffa5c1](https://github.com/anomalyco/goflow/commit/7ffa5c1) - feat: add multi-file picker, remove external nodes, update .gitignore
+### [7ffa5c1](https://github.com/anv-99-vn/goflow/commit/7ffa5c1) - feat: add multi-file picker, remove external nodes, update .gitignore
 
 #### Backend
 - Add `POST /api/analyze-file` endpoint that accepts multipart file uploads
@@ -64,7 +63,7 @@ All notable changes to this project are documented here. Format follows [Convent
 
 ---
 
-### [f45aaaf](https://github.com/anomalyco/goflow/commit/f45aaaf) - Initial commit: GoFlow - Go source code data flow visualizer
+### [f45aaaf](https://github.com/anv-99-vn/goflow/commit/f45aaaf) - Initial commit: GoFlow - Go source code data flow visualizer
 
 #### Features
 - Go AST analyzer: auto-detects func main, groups by package, traces data flow

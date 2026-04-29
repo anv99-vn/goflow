@@ -48,3 +48,5 @@ go.work.sum
 
 # Temp files (created by GoFlow file analysis)
 goflow-*
+backend/goflow.exe~
+.claude/settings.local.json

@@ -1,4 +1,4 @@
-import type { PackageNode, FunctionInfo } from "../types";
+import type { PackageNode, FunctionInfo, StructInfo } from "../types";
 
 interface Props {
   node: PackageNode | null;
@@ -57,6 +57,17 @@ export function DetailPanel({ node, onClose }: Props) {
           <div style={{ color: "#475569", fontSize: 13 }}>No functions found</div>
         )}
       </div>
+
+      {node.structs && node.structs.length > 0 && (
+        <div style={{ borderTop: "1px solid #1e293b", paddingTop: 12, marginTop: 12 }}>
+          <div style={{ fontSize: 12, fontWeight: 600, color: "#64748b", marginBottom: 8, textTransform: "uppercase", letterSpacing: 1 }}>
+            Structs ({node.structs.length})
+          </div>
+          {node.structs.map((s) => (
+            <StructCard key={s.name} struct={s} />
+          ))}
+        </div>
+      )}
     </div>
   );
 }
@@ -109,25 +120,53 @@ function FunctionCard({ fn }: { fn: FunctionInfo }) {
         </div>
       )}
 
-      {fn.body && (
-        <pre
-          style={{
-            marginTop: 8,
-            padding: "8px 10px",
-            background: "#0f172a",
-            borderRadius: 6,
-            fontSize: 11,
-            fontFamily: "monospace",
-            color: "#94a3b8",
-            overflowX: "auto",
-            whiteSpace: "pre-wrap",
-            wordBreak: "break-word",
-            maxHeight: 200,
-            overflowY: "auto",
-          }}
-        >
-          {fn.body}
-        </pre>
+       {fn.body && (
+         <pre
+           style={{
+             marginTop: 8,
+             padding: "8px 10px",
+             background: "#0f172a",
+             borderRadius: 6,
+             fontSize: 11,
+             fontFamily: "monospace",
+             color: "#94a3b8",
+             overflowX: "auto",
+             whiteSpace: "pre-wrap",
+             wordBreak: "break-word",
+             maxHeight: 200,
+             overflowY: "auto",
+           }}
+         >
+           {fn.body}
+         </pre>
+       )}
+     </div>
+   );
+ }
+
+function StructCard({ struct }: { struct: StructInfo }) {
+  return (
+    <div
+      style={{
+        background: "#1e293b",
+        borderRadius: 8,
+        padding: "10px 12px",
+        marginBottom: 8,
+        fontSize: 13,
+      }}
+    >
+      <div style={{ fontWeight: 600, color: "#a78bfa", marginBottom: 6 }}>
+        type {struct.name} struct
+      </div>
+
+      {struct.fields?.length > 0 && (
+        <div style={{ marginLeft: 8 }}>
+          {struct.fields.map((field, i) => (
+            <div key={i} style={{ color: "#cbd5e1", fontSize: 12 }}>
+              {field}
+            </div>
+          ))}
+        </div>
       )}
     </div>
   );

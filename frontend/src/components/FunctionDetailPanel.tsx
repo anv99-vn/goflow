@@ -3,15 +3,24 @@ import go from "react-syntax-highlighter/dist/esm/languages/prism/go";
 import { vscDarkPlus } from "react-syntax-highlighter/dist/esm/styles/prism";
 
 SyntaxHighlighter.registerLanguage("go", go);
-import type { FuncNode } from "../types";
+import type { FuncNode, StructNode } from "../types";
 
 interface Props {
   node: FuncNode | null;
+  structNodes: StructNode[];
+  onStructClick: (structNode: StructNode) => void;
   onClose: () => void;
 }
 
-export function FunctionDetailPanel({ node, onClose }: Props) {
+export function FunctionDetailPanel({ node, structNodes, onStructClick, onClose }: Props) {
   if (!node) return null;
+
+  // Find structs used by this function
+  const usedStructs = structNodes.filter((s) => {
+    // Check if struct name appears in params, returns, or body
+    const allText = [...(node.params ?? []), ...(node.returns ?? []), node.body ?? ""].join(" ");
+    return allText.includes(s.label);
+  });
 
   // Reconstruct readable signature from parts
   const params = (node.params ?? []).join(", ");
@@ -91,6 +100,44 @@ export function FunctionDetailPanel({ node, onClose }: Props) {
           </div>
         )}
       </div>
+
+      {/* Structs used */}
+      {usedStructs.length > 0 && (
+        <div style={{ padding: "12px 20px", borderBottom: "1px solid #1e293b", flexShrink: 0 }}>
+          <div style={{ fontSize: 11, fontWeight: 600, color: "#64748b", marginBottom: 8, textTransform: "uppercase", letterSpacing: 1 }}>
+            Structs Used ({usedStructs.length})
+          </div>
+          <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+            {usedStructs.map((s) => (
+              <button
+                key={s.id}
+                onClick={() => onStructClick(s)}
+                style={{
+                  background: "#1e1b4b",
+                  border: "1px solid #4338ca",
+                  borderRadius: 6,
+                  padding: "4px 10px",
+                  fontSize: 12,
+                  color: "#c7d2fe",
+                  fontFamily: "monospace",
+                  cursor: "pointer",
+                  transition: "all 0.15s",
+                }}
+                onMouseEnter={(e) => {
+                  e.currentTarget.style.background = "#2e1065";
+                  e.currentTarget.style.borderColor = "#a78bfa";
+                }}
+                onMouseLeave={(e) => {
+                  e.currentTarget.style.background = "#1e1b4b";
+                  e.currentTarget.style.borderColor = "#4338ca";
+                }}
+              >
+                📦 {s.label}
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
 
       {/* Source code */}
       <div style={{ padding: "12px 20px", flex: 1, overflowY: "auto", minHeight: 0 }}>

@@ -7,11 +7,17 @@ export interface FunctionInfo {
   body: string;
 }
 
+export interface StructInfo {
+  name: string;
+  fields: string[];
+}
+
 export interface PackageNode {
   id: string;
   label: string;
   package: string;
   functions: FunctionInfo[];
+  structs: StructInfo[];
   type: "entrypoint" | "package" | "external";
   position: { x: number; y: number };
 }
@@ -41,9 +47,26 @@ export interface FuncEdge {
   label: string;
 }
 
+export interface StructNode {
+  id: string;
+  label: string;
+  package: string;
+  fields: string[];
+  position: { x: number; y: number };
+}
+
+export interface StructEdge {
+  id: string;
+  source: string;
+  target: string;
+  label: string;
+}
+
 export interface Graph {
   nodes: PackageNode[];
   edges: FlowEdge[];
   functionNodes: FuncNode[];
   functionEdges: FuncEdge[];
+  structNodes: StructNode[];
+  structEdges: StructEdge[];
 }

@@ -12,12 +12,19 @@ import (
 	"strings"
 )
 
+// StructInfo holds metadata about a struct within a package
+type StructInfo struct {
+	Name   string   `json:"name"`
+	Fields []string `json:"fields"` // field names with types
+}
+
 // Node represents a package-level component in the data flow graph
 type Node struct {
 	ID          string            `json:"id"`
 	Label       string            `json:"label"`
 	Package     string            `json:"package"`
 	Functions   []FunctionInfo    `json:"functions"`
+	Structs     []StructInfo      `json:"structs"`
 	Type        string            `json:"type"` // "entrypoint", "package", "external"
 	Position    map[string]float64 `json:"position"`
 }
@@ -80,12 +87,31 @@ type FuncEdge struct {
 	Label  string `json:"label"` // argument expressions at call site(s)
 }
 
+// StructNode is a struct-level node in the graph
+type StructNode struct {
+	ID       string             `json:"id"`
+	Label    string             `json:"label"`
+	Package  string             `json:"package"`
+	Fields   []string           `json:"fields"`
+	Position map[string]float64 `json:"position"`
+}
+
+// StructEdge represents a relationship between a function and a struct
+type StructEdge struct {
+	ID     string `json:"id"`
+	Source string `json:"source"`
+	Target string `json:"target"`
+	Label  string `json:"label"` // "uses" or "embeds"
+}
+
 // Graph is the full data flow graph
 type Graph struct {
-	Nodes         []Node     `json:"nodes"`
-	Edges         []Edge     `json:"edges"`
-	FunctionNodes []FuncNode `json:"functionNodes"`
-	FunctionEdges []FuncEdge `json:"functionEdges"`
+	Nodes         []Node        `json:"nodes"`
+	Edges         []Edge        `json:"edges"`
+	FunctionNodes []FuncNode    `json:"functionNodes"`
+	FunctionEdges []FuncEdge    `json:"functionEdges"`
+	StructNodes   []StructNode  `json:"structNodes"`
+	StructEdges   []StructEdge  `json:"structEdges"`
 }
 
 type pkgInfo struct {
@@ -95,6 +121,7 @@ type pkgInfo struct {
 	files     []*ast.File
 	typeInfo  *types.Info
 	functions []FunctionInfo
+	structs   []StructInfo
 	imports   map[string]string // alias -> import path
 }
 
@@ -122,6 +149,7 @@ func Analyze(rootDir string) (*Graph, error) {
 			Label:     pkg.name,
 			Package:   pkgPath,
 			Functions: pkg.functions,
+			Structs:   pkg.structs,
 			Type:      nodeType,
 			Position:  map[string]float64{"x": 0, "y": 0},
 		}
@@ -154,7 +182,11 @@ func Analyze(rootDir string) (*Graph, error) {
 		}
 	}
 
+	// Build struct nodes and edges
+	graph.StructNodes, graph.StructEdges = buildStructGraph(packages, graph.FunctionNodes)
+
 	applyLayout(graph)
+	applyStructLayout(graph)
 
 	graph.FunctionNodes, graph.FunctionEdges = buildFunctionGraph(packages)
 
@@ -206,6 +238,7 @@ func loadPackages(rootDir string) (map[string]*pkgInfo, error) {
 				imports: map[string]string{},
 			}
 			info.functions = extractFunctions(files, fset)
+			info.structs = extractStructs(files, fset)
 			pkgs[pkgPath] = info
 		}
 		return nil
@@ -279,6 +312,38 @@ func extractFunctions(files []*ast.File, fset *token.FileSet) []FunctionInfo {
 		}
 	}
 	return fns
+}
+
+func extractStructs(files []*ast.File, fset *token.FileSet) []StructInfo {
+	var structs []StructInfo
+
+	for _, file := range files {
+		for _, decl := range file.Decls {
+			genDecl, ok := decl.(*ast.GenDecl)
+			if !ok || genDecl.Tok != token.TYPE {
+				continue
+			}
+
+			for _, spec := range genDecl.Specs {
+				typeSpec, ok := spec.(*ast.TypeSpec)
+				if !ok {
+					continue
+				}
+
+				structType, ok := typeSpec.Type.(*ast.StructType)
+				if !ok {
+					continue
+				}
+
+				info := StructInfo{
+					Name:   typeSpec.Name.Name,
+					Fields: extractFieldTypes(structType.Fields),
+				}
+				structs = append(structs, info)
+			}
+		}
+	}
+	return structs
 }
 
 func extractFieldTypes(fields *ast.FieldList) []string {
@@ -614,6 +679,130 @@ func applyFuncLayout(nodes []FuncNode, edges []FuncEdge) {
 		for j, idx := range indices {
 			nodes[idx].Position["x"] = float64(maxLayer-layer) * xSpacing
 			nodes[idx].Position["y"] = float64(j) * ySpacing
+		}
+	}
+}
+
+// buildStructGraph creates struct nodes and edges showing which functions use which structs.
+func buildStructGraph(packages map[string]*pkgInfo, funcNodes []FuncNode) ([]StructNode, []StructEdge) {
+	structSet := map[string]StructNode{}   // id -> node
+	edgeSet := map[string]StructEdge{}     // "src->tgt" -> edge
+	funcNodeMap := map[string]FuncNode{}   // id -> funcNode
+
+	for _, fn := range funcNodes {
+		funcNodeMap[fn.ID] = fn
+	}
+
+	for pkgPath, pkg := range packages {
+		for _, s := range pkg.structs {
+			id := sanitizeID(pkgPath + "__struct_" + s.Name)
+			structSet[id] = StructNode{
+				ID:       id,
+				Label:    s.Name,
+				Package:  pkgPath,
+				Fields:   s.Fields,
+				Position: map[string]float64{"x": 0, "y": 0},
+			}
+		}
+
+		for _, file := range pkg.files {
+			for _, decl := range file.Decls {
+				fnDecl, ok := decl.(*ast.FuncDecl)
+				if !ok || fnDecl.Body == nil {
+					continue
+				}
+				callerID := sanitizeID(pkgPath + "__" + fnDecl.Name.Name)
+				if _, known := funcNodeMap[callerID]; !known {
+					continue
+				}
+
+				structUsage := map[string]string{} // structID -> label
+				ast.Inspect(fnDecl.Body, func(n ast.Node) bool {
+					// Check for struct literal: &pkg.Struct{} or Struct{}
+					if compLit, ok := n.(*ast.CompositeLit); ok {
+						t := typeString(compLit.Type)
+						if t != "" {
+							parts := strings.Split(t, ".")
+							var structName string
+							if len(parts) == 1 {
+								structName = parts[0]
+							} else if len(parts) == 2 {
+								structName = parts[1]
+							}
+							for _, s := range pkg.structs {
+								if s.Name == structName {
+									structID := sanitizeID(pkgPath + "__struct_" + s.Name)
+									structUsage[structID] = "uses"
+									break
+								}
+							}
+						}
+					}
+					// Check for type assertions or casts
+					if t, ok := n.(*ast.TypeAssertExpr); ok {
+						tstr := typeString(t.Type)
+						checkStructUsage(tstr, pkg, pkgPath, structUsage)
+					}
+					return true
+				})
+
+				for structID, label := range structUsage {
+					key := callerID + "->" + structID
+					if _, exists := edgeSet[key]; !exists {
+						edgeSet[key] = StructEdge{
+							ID:     "se_" + callerID + "_" + structID,
+							Source: callerID,
+							Target: structID,
+							Label:  label,
+						}
+					}
+				}
+			}
+		}
+	}
+
+	var nodes []StructNode
+	for _, n := range structSet {
+		nodes = append(nodes, n)
+	}
+	var edges []StructEdge
+	for _, e := range edgeSet {
+		edges = append(edges, e)
+	}
+	return nodes, edges
+}
+
+func checkStructUsage(typeStr string, pkg *pkgInfo, pkgPath string, usage map[string]string) {
+	if typeStr == "" {
+		return
+	}
+	parts := strings.Split(typeStr, ".")
+	var structName string
+	if len(parts) == 1 {
+		structName = parts[0]
+	} else if len(parts) == 2 {
+		structName = parts[1]
+	}
+	for _, s := range pkg.structs {
+		if s.Name == structName {
+			structID := sanitizeID(pkgPath + "__struct_" + s.Name)
+			usage[structID] = "uses"
+			break
+		}
+	}
+}
+
+// applyStructLayout positions struct nodes near their package node with vertical offset.
+func applyStructLayout(graph *Graph) {
+	pkgNodeMap := map[string]Node{} // package path -> Node
+	for _, n := range graph.Nodes {
+		pkgNodeMap[n.Package] = n
+	}
+
+	for i, sn := range graph.StructNodes {
+		if pkg, ok := pkgNodeMap[sn.Package]; ok {
+			graph.StructNodes[i].Position["x"] = pkg.Position["x"] + 350
+			graph.StructNodes[i].Position["y"] = pkg.Position["y"] + float64(i*100)
 		}
 	}
 }

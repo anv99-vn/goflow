@@ -11,24 +11,36 @@ import {
 } from "@xyflow/react";
 import type { Connection, Edge, Node } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
-import type { Graph, PackageNode, FuncNode } from "./types";
+import type { Graph, PackageNode, FuncNode, StructNode } from "./types";
 import { PackageNodeComponent } from "./components/PackageNode";
 import { FunctionNodeComponent } from "./components/FunctionNode";
+import { StructNodeComponent } from "./components/StructNode";
 import { DetailPanel } from "./components/DetailPanel";
 import { FunctionDetailPanel } from "./components/FunctionDetailPanel";
+import { StructDetailPanel } from "./components/StructDetailPanel";
 
 const NODE_TYPES = {
   packageNode: PackageNodeComponent,
   functionNode: FunctionNodeComponent,
+  structNode: StructNodeComponent,
 };
 
-function graphToFlow(graph: Graph): { nodes: Node[]; edges: Edge[] } {
+function graphToFlow(graph: Graph, selectedStruct?: StructNode | null): { nodes: Node[]; edges: Edge[] } {
   const nodes: Node[] = (graph.nodes ?? []).map((n) => ({
     id: n.id,
     type: "packageNode",
     position: n.position,
     data: { ...n },
   }));
+
+  (graph.structNodes ?? []).forEach((n) => {
+    nodes.push({
+      id: n.id,
+      type: "structNode",
+      position: n.position,
+      data: { ...n, isActive: selectedStruct?.id === n.id },
+    });
+  });
 
   const edges: Edge[] = (graph.edges ?? []).map((e) => ({
     id: e.id,
@@ -40,6 +52,19 @@ function graphToFlow(graph: Graph): { nodes: Node[]; edges: Edge[] } {
     labelStyle: { fill: "#94a3b8", fontSize: 11 },
     labelBgStyle: { fill: "#0f172a" },
   }));
+
+  (graph.structEdges ?? []).forEach((e) => {
+    edges.push({
+      id: e.id,
+      source: e.source,
+      target: e.target,
+      label: e.label,
+      markerEnd: { type: MarkerType.ArrowClosed, color: "#a78bfa" },
+      style: { stroke: "#a78bfa", strokeDasharray: "5 5" },
+      labelStyle: { fill: "#c4b5fd", fontSize: 11 },
+      labelBgStyle: { fill: "#1e1b4b" },
+    });
+  });
 
   return { nodes, edges };
 }
@@ -98,6 +123,7 @@ export default function App() {
   const [error, setError] = useState("");
   const [selectedNode, setSelectedNode] = useState<PackageNode | null>(null);
   const [selectedFuncNode, setSelectedFuncNode] = useState<FuncNode | null>(null);
+  const [selectedStructNode, setSelectedStructNode] = useState<StructNode | null>(null);
   const [activeFuncId, setActiveFuncId] = useState<string | null>(null);
   const [funcPositions, setFuncPositions] = useState<SavedPositions>(loadFuncPositions);
 
@@ -113,11 +139,11 @@ export default function App() {
       setCurrentGraph(graph);
       const pos = savedPos ?? funcPositions;
       const { nodes: n, edges: e } =
-        vm === "function" ? funcGraphToFlow(graph, pos, activeFuncId) : graphToFlow(graph);
+        vm === "function" ? funcGraphToFlow(graph, pos, activeFuncId) : graphToFlow(graph, selectedStructNode);
       setNodes(n);
       setEdges(e);
     },
-    [setNodes, setEdges, funcPositions]
+    [setNodes, setEdges, funcPositions, selectedStructNode]
   );
 
   const analyze = useCallback(async () => {
@@ -241,11 +267,22 @@ export default function App() {
       setSelectedFuncNode(node.data as unknown as FuncNode);
       setActiveFuncId(node.id);
       setSelectedNode(null);
+      // Don't clear selectedStructNode - keep it open if already viewing
+    } else if (node.type === "structNode") {
+      setSelectedStructNode(node.data as unknown as StructNode);
+      setSelectedNode(null);
+      setSelectedFuncNode(null);
+      setActiveFuncId(null);
     } else {
       setSelectedNode(node.data as unknown as PackageNode);
       setSelectedFuncNode(null);
       setActiveFuncId(null);
+      setSelectedStructNode(null);
     }
+  }, []);
+
+  const handleStructClick = useCallback((structNode: StructNode) => {
+    setSelectedStructNode(structNode);
   }, []);
 
   const onNodeDragStop = useCallback((_: React.MouseEvent, node: Node) => {
@@ -260,7 +297,8 @@ export default function App() {
   const stats = useMemo(() => {
     const entrypoints = nodes.filter((n) => (n.data as any).type === "entrypoint").length;
     const packages = nodes.filter((n) => (n.data as any).type === "package").length;
-    return { entrypoints, packages, edges: edges.length };
+    const structs = nodes.filter((n) => n.type === "structNode").length;
+    return { entrypoints, packages, structs, edges: edges.length };
   }, [nodes, edges]);
 
   const switchMode = (m: Mode) => {
@@ -281,8 +319,9 @@ export default function App() {
     setSelectedNode(null);
     setSelectedFuncNode(null);
     setActiveFuncId(null);
+    setSelectedStructNode(null);
     const { nodes: n, edges: e } =
-      vm === "function" ? funcGraphToFlow(currentGraph, funcPositions, activeFuncId) : graphToFlow(currentGraph);
+      vm === "function" ? funcGraphToFlow(currentGraph, funcPositions, activeFuncId) : graphToFlow(currentGraph, selectedStructNode);
     setNodes(n);
     setEdges(e);
   };
@@ -486,6 +525,7 @@ export default function App() {
         >
           <StatBadge label="entrypoints" value={stats.entrypoints} color="#6366f1" />
           <StatBadge label="packages" value={stats.packages} color="#0ea5e9" />
+          {stats.structs > 0 && <StatBadge label="structs" value={stats.structs} color="#a78bfa" />}
           <StatBadge label="edges" value={stats.edges} color="#475569" />
 
           <div style={{ flex: 1 }} />
@@ -587,6 +627,7 @@ export default function App() {
           <Controls />
           <MiniMap
             nodeColor={(n) => {
+              if (n.type === "structNode") return "#a78bfa";
               const t = (n.data as any)?.type;
               if (t === "entrypoint") return "#6366f1";
               if (t === "external") return "#475569";
@@ -602,10 +643,17 @@ export default function App() {
         />
         <FunctionDetailPanel
           node={selectedFuncNode}
+          structNodes={currentGraph?.structNodes ?? []}
+          onStructClick={handleStructClick}
           onClose={() => {
             setSelectedFuncNode(null);
             setActiveFuncId(null);
           }}
+        />
+        <StructDetailPanel
+          node={selectedStructNode}
+          isFromFunction={!!selectedFuncNode}
+          onClose={() => setSelectedStructNode(null)}
         />
       </div>
     </div>

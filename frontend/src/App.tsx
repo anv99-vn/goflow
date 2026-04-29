@@ -61,13 +61,14 @@ function persistFuncPositions(pos: SavedPositions) {
 
 function funcGraphToFlow(
   graph: Graph,
-  savedPos: SavedPositions = {}
+  savedPos: SavedPositions = {},
+  activeId: string | null = null
 ): { nodes: Node[]; edges: Edge[] } {
   const nodes: Node[] = (graph.functionNodes ?? []).map((n) => ({
     id: n.id,
     type: "functionNode",
     position: savedPos[n.id] ?? n.position,
-    data: { ...n },
+    data: { ...n, isActive: n.id === activeId },
   }));
 
   const edges: Edge[] = (graph.functionEdges ?? []).map((e) => ({
@@ -97,6 +98,7 @@ export default function App() {
   const [error, setError] = useState("");
   const [selectedNode, setSelectedNode] = useState<PackageNode | null>(null);
   const [selectedFuncNode, setSelectedFuncNode] = useState<FuncNode | null>(null);
+  const [activeFuncId, setActiveFuncId] = useState<string | null>(null);
   const [funcPositions, setFuncPositions] = useState<SavedPositions>(loadFuncPositions);
 
   const [nodes, setNodes, onNodesChange] = useNodesState<Node>([]);
@@ -111,7 +113,7 @@ export default function App() {
       setCurrentGraph(graph);
       const pos = savedPos ?? funcPositions;
       const { nodes: n, edges: e } =
-        vm === "function" ? funcGraphToFlow(graph, pos) : graphToFlow(graph);
+        vm === "function" ? funcGraphToFlow(graph, pos, activeFuncId) : graphToFlow(graph);
       setNodes(n);
       setEdges(e);
     },
@@ -180,6 +182,17 @@ export default function App() {
     [applyGraph]
   );
 
+  // Update node data when activeFuncId changes
+  useEffect(() => {
+    if (viewMode !== "function") return;
+    setNodes((nds) =>
+      nds.map((n) => ({
+        ...n,
+        data: { ...n.data, isActive: n.id === activeFuncId },
+      }))
+    );
+  }, [activeFuncId, viewMode, setNodes]);
+
   // Merge newly picked files with existing, deduplicate by name
   const addFiles = useCallback((incoming: File[]) => {
     const goFiles = incoming.filter((f) => f.name.endsWith(".go"));
@@ -226,10 +239,12 @@ export default function App() {
   const onNodeClick = useCallback((_: React.MouseEvent, node: Node) => {
     if (node.type === "functionNode") {
       setSelectedFuncNode(node.data as unknown as FuncNode);
+      setActiveFuncId(node.id);
       setSelectedNode(null);
     } else {
       setSelectedNode(node.data as unknown as PackageNode);
       setSelectedFuncNode(null);
+      setActiveFuncId(null);
     }
   }, []);
 
@@ -265,8 +280,9 @@ export default function App() {
     setViewMode(vm);
     setSelectedNode(null);
     setSelectedFuncNode(null);
+    setActiveFuncId(null);
     const { nodes: n, edges: e } =
-      vm === "function" ? funcGraphToFlow(currentGraph, funcPositions) : graphToFlow(currentGraph);
+      vm === "function" ? funcGraphToFlow(currentGraph, funcPositions, activeFuncId) : graphToFlow(currentGraph);
     setNodes(n);
     setEdges(e);
   };
@@ -586,7 +602,10 @@ export default function App() {
         />
         <FunctionDetailPanel
           node={selectedFuncNode}
-          onClose={() => setSelectedFuncNode(null)}
+          onClose={() => {
+            setSelectedFuncNode(null);
+            setActiveFuncId(null);
+          }}
         />
       </div>
     </div>

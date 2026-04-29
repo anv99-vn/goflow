@@ -61,6 +61,17 @@ var goBuiltins = map[string]bool{
 	"real": true, "recover": true,
 }
 
+// goPredeclaredTypes lists Go's predeclared types that may appear in type conversions.
+// These should not be treated as function calls in the graph.
+var goPredeclaredTypes = map[string]bool{
+	"bool": true, "byte": true, "complex128": true, "complex64": true,
+	"error": true, "float32": true, "float64": true,
+	"int": true, "int16": true, "int32": true, "int64": true, "int8": true,
+	"rune": true, "string": true,
+	"uint": true, "uint16": true, "uint32": true, "uint64": true, "uint8": true,
+	"uintptr": true,
+}
+
 // FuncEdge is a directed call edge between two functions
 type FuncEdge struct {
 	ID     string `json:"id"`
@@ -468,6 +479,9 @@ func buildFunctionGraph(packages map[string]*pkgInfo) ([]FuncNode, []FuncEdge) {
 					calleeName := ident.Name
 					if calleeName == callerName {
 						return true // skip direct recursion
+					}
+					if goPredeclaredTypes[calleeName] {
+						return true // type conversion, skip
 					}
 
 					argParts := make([]string, len(call.Args))

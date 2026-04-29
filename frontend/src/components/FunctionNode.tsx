@@ -1,4 +1,5 @@
 import { Handle, Position } from "@xyflow/react";
+import type { NodeProps } from "@xyflow/react";
 import type { FuncNode } from "../types";
 
 const COLORS = {
@@ -7,21 +8,26 @@ const COLORS = {
   missing: { bg: "#2d0a0a", border: "#dc2626", accent: "#f87171" },
 };
 
-export function FunctionNodeComponent({ data }: { data: FuncNode }) {
-  const c = data.missing ? COLORS.missing : data.label === "main" ? COLORS.main : COLORS.fn;
+const ACTIVE_GLOW = "#f59e0b"; // Amber glow for active (when detail panel is open)
+
+export function FunctionNodeComponent({ data }: NodeProps) {
+  const nodeData = data as unknown as FuncNode & { isActive?: boolean };
+  const c = nodeData.missing ? COLORS.missing : nodeData.label === "main" ? COLORS.main : COLORS.fn;
+  const isActive = nodeData.isActive === true;
 
   return (
     <div
       style={{
         background: c.bg,
-        border: `1.5px solid ${c.border}`,
+        border: `1.5px solid ${isActive ? ACTIVE_GLOW : c.border}`,
         borderRadius: 10,
         minWidth: 160,
         maxWidth: 240,
         fontFamily: "monospace",
         fontSize: 12,
         color: "#e2e8f0",
-        boxShadow: `0 0 0 1px ${c.border}22`,
+        boxShadow: isActive ? `0 0 16px ${ACTIVE_GLOW}88` : `0 0 0 1px ${c.border}22`,
+        transition: "box-shadow 0.2s, border-color 0.2s",
       }}
     >
       <Handle type="target" position={Position.Left} style={{ background: c.accent, border: "none" }} />
@@ -37,20 +43,20 @@ export function FunctionNodeComponent({ data }: { data: FuncNode }) {
         }}
       >
         <span style={{ color: c.accent, fontWeight: 700, fontSize: 13 }}>
-          {data.label}
+          {nodeData.label}
         </span>
-        {data.missing ? (
+        {nodeData.missing ? (
           <span style={{ color: "#f87171", fontSize: 9, background: "#450a0a", border: "1px solid #dc2626", borderRadius: 3, padding: "1px 5px" }}>missing</span>
         ) : (
-          <span style={{ color: "#475569", fontSize: 10 }}>func</span>
+          <span style={{ color: "#475566", fontSize: 10 }}>func</span>
         )}
       </div>
 
       {/* Params & returns */}
       <div style={{ padding: "6px 12px 8px", display: "flex", flexDirection: "column", gap: 4 }}>
-        {(data.params ?? []).length > 0 && (
+        {(nodeData.params ?? []).length > 0 && (
           <div style={{ display: "flex", flexWrap: "wrap", gap: 4 }}>
-            {data.params.map((p) => (
+            {nodeData.params.map((p) => (
               <span
                 key={p}
                 style={{
@@ -67,10 +73,10 @@ export function FunctionNodeComponent({ data }: { data: FuncNode }) {
             ))}
           </div>
         )}
-        {(data.returns ?? []).length > 0 && (
+        {(nodeData.returns ?? []).length > 0 && (
           <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
-            <span style={{ color: "#475569", fontSize: 10 }}>→</span>
-            {data.returns.map((r) => (
+            <span style={{ color: "#475566", fontSize: 10 }}>→</span>
+            {nodeData.returns.map((r) => (
               <span
                 key={r}
                 style={{

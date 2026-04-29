@@ -1,4 +1,4 @@
-import { useState, useCallback, useMemo, useEffect } from "react";
+import { useState, useCallback, useMemo, useEffect, useRef } from "react";
 import {
   ReactFlow,
   Background,
@@ -135,6 +135,7 @@ export default function App() {
   const [activeFuncId, setActiveFuncId] = useState<string | null>(null);
   const [funcPositions, setFuncPositions] = useState<SavedPositions>(loadFuncPositions);
   const [hiddenFuncIds, setHiddenFuncIds] = useState<Set<string>>(new Set());
+  const rfRef = useRef<any>(null); // ReactFlow instance ref for auto-pan
 
   const [nodes, setNodes, onNodesChange] = useNodesState<Node>([]);
   const [edges, setEdges, onEdgesChange] = useEdgesState<Edge>([]);
@@ -299,6 +300,31 @@ export default function App() {
       setActiveFuncId(node.id);
       setSelectedNode(null);
       // Don't clear selectedStructNode - keep it open if already viewing
+
+      // Auto-pan to keep node visible when detail panel opens
+      const instance = rfRef.current;
+      if (instance) {
+        const viewport = instance.getViewport();
+        const zoom = viewport.zoom;
+
+        // Calculate node's current screen X position
+        const nodeScreenX = (node.position.x * zoom) + viewport.x;
+
+        // Detail panel starts at ~470px from right (420 minWidth + 16 right + padding)
+        const panelStartX = window.innerWidth - 470;
+
+        // If node would be hidden behind panel, pan left
+        if (nodeScreenX > panelStartX) {
+          // Place node at ~35% of viewport width for comfortable viewing
+          const targetScreenX = window.innerWidth * 0.35;
+          const newViewportX = targetScreenX - (node.position.x * zoom);
+
+          instance.setViewport(
+            { x: newViewportX, y: viewport.y, zoom: viewport.zoom },
+            { duration: 300 }
+          );
+        }
+      }
     } else if (node.type === "structNode") {
       setSelectedStructNode(node.data as unknown as StructNode);
       setSelectedNode(null);
@@ -672,6 +698,7 @@ export default function App() {
           fitView
           fitViewOptions={{ padding: 0.2 }}
           colorMode="dark"
+          onInit={(instance) => { rfRef.current = instance; }}
         >
           <Background color="#1e293b" gap={24} />
           <Controls />

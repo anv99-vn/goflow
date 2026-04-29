@@ -4,6 +4,7 @@ export interface FunctionInfo {
   returns: string[];
   callsTo: string[];
   dataOps: string[];
+  body: string;
 }
 
 export interface PackageNode {
@@ -22,7 +23,25 @@ export interface FlowEdge {
   label: string;
 }
 
+export interface FuncNode {
+  id: string;
+  label: string;
+  package: string;
+  params: string[];
+  returns: string[];
+  position: { x: number; y: number };
+}
+
+export interface FuncEdge {
+  id: string;
+  source: string;
+  target: string;
+  label: string;
+}
+
 export interface Graph {
   nodes: PackageNode[];
   edges: FlowEdge[];
+  functionNodes: FuncNode[];
+  functionEdges: FuncEdge[];
 }

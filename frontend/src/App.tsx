@@ -1,4 +1,4 @@
-import { useState, useCallback, useMemo, useRef } from "react";
+import { useState, useCallback, useMemo, useEffect } from "react";
 import {
   ReactFlow,
   Background,
@@ -13,9 +13,13 @@ import type { Connection, Edge, Node } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
 import type { Graph, PackageNode } from "./types";
 import { PackageNodeComponent } from "./components/PackageNode";
+import { FunctionNodeComponent } from "./components/FunctionNode";
 import { DetailPanel } from "./components/DetailPanel";
 
-const NODE_TYPES = { packageNode: PackageNodeComponent };
+const NODE_TYPES = {
+  packageNode: PackageNodeComponent,
+  functionNode: FunctionNodeComponent,
+};
 
 function graphToFlow(graph: Graph): { nodes: Node[]; edges: Edge[] } {
   const nodes: Node[] = (graph.nodes ?? []).map((n) => ({
@@ -39,16 +43,40 @@ function graphToFlow(graph: Graph): { nodes: Node[]; edges: Edge[] } {
   return { nodes, edges };
 }
 
+function funcGraphToFlow(graph: Graph): { nodes: Node[]; edges: Edge[] } {
+  const nodes: Node[] = (graph.functionNodes ?? []).map((n) => ({
+    id: n.id,
+    type: "functionNode",
+    position: n.position,
+    data: { ...n },
+  }));
+
+  const edges: Edge[] = (graph.functionEdges ?? []).map((e) => ({
+    id: e.id,
+    source: e.source,
+    target: e.target,
+    label: e.label,
+    markerEnd: { type: MarkerType.ArrowClosed, color: "#38bdf8" },
+    style: { stroke: "#38bdf8" },
+    labelStyle: { fill: "#7dd3fc", fontSize: 11 },
+    labelBgStyle: { fill: "#0c2540" },
+  }));
+
+  return { nodes, edges };
+}
+
 type Mode = "project" | "file";
+type ViewMode = "package" | "function";
 
 export default function App() {
   const [mode, setMode] = useState<Mode>("project");
+  const [viewMode, setViewMode] = useState<ViewMode>("package");
+  const [currentGraph, setCurrentGraph] = useState<Graph | null>(null);
   const [pathInput, setPathInput] = useState("");
-  const [selectedFileNames, setSelectedFileNames] = useState<string[]>([]);
+  const [selectedFiles, setSelectedFiles] = useState<File[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [selectedNode, setSelectedNode] = useState<PackageNode | null>(null);
-  const fileInputRef = useRef<HTMLInputElement>(null);
 
   const [nodes, setNodes, onNodesChange] = useNodesState<Node>([]);
   const [edges, setEdges, onEdgesChange] = useEdgesState<Edge>([]);
@@ -58,8 +86,10 @@ export default function App() {
   );
 
   const applyGraph = useCallback(
-    (graph: Graph) => {
-      const { nodes: n, edges: e } = graphToFlow(graph);
+    (graph: Graph, vm: ViewMode = "package") => {
+      setCurrentGraph(graph);
+      const { nodes: n, edges: e } =
+        vm === "function" ? funcGraphToFlow(graph) : graphToFlow(graph);
       setNodes(n);
       setEdges(e);
     },
@@ -84,7 +114,8 @@ export default function App() {
         throw new Error(text || `HTTP ${res.status}`);
       }
 
-      applyGraph(await res.json());
+      setViewMode("package");
+      applyGraph(await res.json(), "package");
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -115,7 +146,8 @@ export default function App() {
           throw new Error(text || `HTTP ${res.status}`);
         }
 
-        applyGraph(await res.json());
+        setViewMode("package");
+        applyGraph(await res.json(), "package");
       } catch (err) {
         setError(err instanceof Error ? err.message : String(err));
       } finally {
@@ -125,35 +157,47 @@ export default function App() {
     [applyGraph]
   );
 
+  // Merge newly picked files with existing, deduplicate by name
+  const addFiles = useCallback((incoming: File[]) => {
+    const goFiles = incoming.filter((f) => f.name.endsWith(".go"));
+    if (goFiles.length === 0) return;
+    setSelectedFiles((prev) => {
+      const existingNames = new Set(prev.map((f) => f.name));
+      return [...prev, ...goFiles.filter((f) => !existingNames.has(f.name))];
+    });
+  }, []);
+
+  const removeFile = useCallback((name: string) => {
+    setSelectedFiles((prev) => prev.filter((f) => f.name !== name));
+  }, []);
+
+  // Re-analyze whenever the file list changes (add or remove)
+  useEffect(() => {
+    if (mode !== "file") return;
+    if (selectedFiles.length === 0) {
+      setNodes([]);
+      setEdges([]);
+      setCurrentGraph(null);
+      return;
+    }
+    analyzeFiles(selectedFiles);
+  }, [selectedFiles]); // eslint-disable-line react-hooks/exhaustive-deps
+
   const handleFileChange = useCallback(
     (e: React.ChangeEvent<HTMLInputElement>) => {
       const files = Array.from(e.target.files ?? []);
-      if (files.length > 0) {
-        setSelectedFileNames(files.map((f) => f.name));
-        setNodes([]);
-        setEdges([]);
-        analyzeFiles(files);
-      }
-      // reset so same selection can be re-triggered
-      e.target.value = "";
+      addFiles(files);
+      e.target.value = ""; // reset so same file can be re-picked
     },
-    [analyzeFiles, setNodes, setEdges]
+    [addFiles]
   );
 
   const handleDrop = useCallback(
     (e: React.DragEvent<HTMLDivElement>) => {
       e.preventDefault();
-      const files = Array.from(e.dataTransfer.files).filter((f) =>
-        f.name.endsWith(".go")
-      );
-      if (files.length > 0) {
-        setSelectedFileNames(files.map((f) => f.name));
-        setNodes([]);
-        setEdges([]);
-        analyzeFiles(files);
-      }
+      addFiles(Array.from(e.dataTransfer.files));
     },
-    [analyzeFiles, setNodes, setEdges]
+    [addFiles]
   );
 
   const onNodeClick = useCallback((_: React.MouseEvent, node: Node) => {
@@ -168,11 +212,23 @@ export default function App() {
 
   const switchMode = (m: Mode) => {
     setMode(m);
+    setViewMode("package");
+    setCurrentGraph(null);
     setError("");
     setSelectedNode(null);
     setNodes([]);
     setEdges([]);
-    setSelectedFileNames([]);
+    setSelectedFiles([]);
+  };
+
+  const switchViewMode = (vm: ViewMode) => {
+    if (!currentGraph) return;
+    setViewMode(vm);
+    setSelectedNode(null);
+    const { nodes: n, edges: e } =
+      vm === "function" ? funcGraphToFlow(currentGraph) : graphToFlow(currentGraph);
+    setNodes(n);
+    setEdges(e);
   };
 
   return (
@@ -249,21 +305,10 @@ export default function App() {
           </>
         ) : (
           <>
-            <input
-              ref={fileInputRef}
-              type="file"
-              accept=".go"
-              multiple
-              onChange={handleFileChange}
-              style={{ display: "none" }}
-            />
-            <button
-              onClick={() => fileInputRef.current?.click()}
-              disabled={loading}
+            <label
               style={{
                 background: loading ? "#334155" : "#0ea5e9",
                 color: "#fff",
-                border: "none",
                 borderRadius: 8,
                 padding: "8px 20px",
                 fontWeight: 600,
@@ -273,49 +318,63 @@ export default function App() {
                 display: "flex",
                 alignItems: "center",
                 gap: 8,
+                flexShrink: 0,
+                userSelect: "none",
               }}
             >
+              <input
+                type="file"
+                multiple
+                // @ts-ignore
+                webkitdirectory=""
+                onChange={handleFileChange}
+                disabled={loading}
+                style={{ display: "none" }}
+              />
               <span style={{ fontSize: 15 }}>📂</span>
-              {loading ? "Analyzing..." : "Choose .go files"}
-            </button>
-            {selectedFileNames.length > 0 && (
-              <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap", maxWidth: 360 }}>
-                {selectedFileNames.length <= 3 ? (
-                  selectedFileNames.map((name) => (
-                    <span
-                      key={name}
-                      style={{
-                        color: "#7dd3fc",
-                        fontSize: 12,
-                        background: "#0c2540",
-                        border: "1px solid #1e4a7a",
-                        borderRadius: 5,
-                        padding: "3px 8px",
-                        maxWidth: 160,
-                        overflow: "hidden",
-                        textOverflow: "ellipsis",
-                        whiteSpace: "nowrap",
-                      }}
-                      title={name}
-                    >
-                      {name}
-                    </span>
-                  ))
-                ) : (
+              {loading ? "Analyzing..." : selectedFiles.length === 0 ? "Choose .go files" : "Add more files"}
+            </label>
+            {selectedFiles.length > 0 && (
+              <div style={{ display: "flex", alignItems: "center", gap: 5, flexWrap: "wrap", maxWidth: 480 }}>
+                {selectedFiles.map((f) => (
                   <span
+                    key={f.name}
                     style={{
+                      display: "flex",
+                      alignItems: "center",
+                      gap: 4,
                       color: "#7dd3fc",
                       fontSize: 12,
                       background: "#0c2540",
                       border: "1px solid #1e4a7a",
                       borderRadius: 5,
-                      padding: "3px 10px",
+                      padding: "3px 6px 3px 8px",
+                      maxWidth: 180,
                     }}
-                    title={selectedFileNames.join(", ")}
+                    title={f.name}
                   >
-                    {selectedFileNames.length} files selected
+                    <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                      {f.name}
+                    </span>
+                    <button
+                      onClick={() => removeFile(f.name)}
+                      disabled={loading}
+                      style={{
+                        background: "none",
+                        border: "none",
+                        color: "#475569",
+                        cursor: loading ? "not-allowed" : "pointer",
+                        padding: 0,
+                        fontSize: 13,
+                        lineHeight: 1,
+                        flexShrink: 0,
+                      }}
+                      title={`Remove ${f.name}`}
+                    >
+                      ✕
+                    </button>
                   </span>
-                )}
+                ))}
               </div>
             )}
           </>
@@ -330,6 +389,7 @@ export default function App() {
             background: "#0f172a",
             borderBottom: "1px solid #1e293b",
             display: "flex",
+            alignItems: "center",
             gap: 24,
             fontSize: 12,
             color: "#64748b",
@@ -339,6 +399,16 @@ export default function App() {
           <StatBadge label="entrypoints" value={stats.entrypoints} color="#6366f1" />
           <StatBadge label="packages" value={stats.packages} color="#0ea5e9" />
           <StatBadge label="edges" value={stats.edges} color="#475569" />
+
+          <div style={{ flex: 1 }} />
+
+          {/* View mode toggle */}
+          {currentGraph && (currentGraph.functionNodes ?? []).length > 0 && (
+            <div style={{ display: "flex", background: "#1e293b", borderRadius: 7, padding: 2, gap: 2 }}>
+              <ViewTab label="Package" active={viewMode === "package"} onClick={() => switchViewMode("package")} />
+              <ViewTab label="Function" active={viewMode === "function"} onClick={() => switchViewMode("function")} />
+            </div>
+          )}
         </div>
       )}
 
@@ -443,6 +513,27 @@ export default function App() {
         />
       </div>
     </div>
+  );
+}
+
+function ViewTab({ label, active, onClick }: { label: string; active: boolean; onClick: () => void }) {
+  return (
+    <button
+      onClick={onClick}
+      style={{
+        background: active ? "#334155" : "transparent",
+        color: active ? "#7dd3fc" : "#64748b",
+        border: "none",
+        borderRadius: 5,
+        padding: "4px 10px",
+        fontSize: 11,
+        fontWeight: active ? 600 : 400,
+        cursor: "pointer",
+        transition: "all 0.15s",
+      }}
+    >
+      {label}
+    </button>
   );
 }
 

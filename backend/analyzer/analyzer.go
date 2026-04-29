@@ -3,10 +3,12 @@ package analyzer
 import (
 	"go/ast"
 	"go/parser"
+	"go/printer"
 	"go/token"
 	"go/types"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 )
 
@@ -35,12 +37,33 @@ type FunctionInfo struct {
 	Returns    []string `json:"returns"`
 	CallsTo    []string `json:"callsTo"`    // packages this function calls into
 	DataOps    []string `json:"dataOps"`    // data operations: merge, transform, filter...
+	Body      string   `json:"body"`     // function body source code
+}
+
+// FuncNode is a function-level node in the call graph
+type FuncNode struct {
+	ID       string             `json:"id"`
+	Label    string             `json:"label"`
+	Package  string             `json:"package"`
+	Params   []string           `json:"params"`
+	Returns  []string           `json:"returns"`
+	Position map[string]float64 `json:"position"`
+}
+
+// FuncEdge is a directed call edge between two functions
+type FuncEdge struct {
+	ID     string `json:"id"`
+	Source string `json:"source"`
+	Target string `json:"target"`
+	Label  string `json:"label"` // argument expressions at call site(s)
 }
 
 // Graph is the full data flow graph
 type Graph struct {
-	Nodes []Node `json:"nodes"`
-	Edges []Edge `json:"edges"`
+	Nodes         []Node     `json:"nodes"`
+	Edges         []Edge     `json:"edges"`
+	FunctionNodes []FuncNode `json:"functionNodes"`
+	FunctionEdges []FuncEdge `json:"functionEdges"`
 }
 
 type pkgInfo struct {
@@ -110,6 +133,9 @@ func Analyze(rootDir string) (*Graph, error) {
 	}
 
 	applyLayout(graph)
+
+	graph.FunctionNodes, graph.FunctionEdges = buildFunctionGraph(packages)
+
 	return graph, nil
 }
 
@@ -191,6 +217,12 @@ func extractFunctions(files []*ast.File, fset *token.FileSet) []FunctionInfo {
 				Name:    fn.Name.Name,
 				Params:  extractFieldTypes(fn.Type.Params),
 				Returns: extractFieldTypes(fn.Type.Results),
+			}
+
+			// extract function body source code
+			var bodyBuf strings.Builder
+			if err := printer.Fprint(&bodyBuf, fset, fn.Body); err == nil {
+				info.Body = bodyBuf.String()
 			}
 
 			// find calls to other packages
@@ -359,4 +391,178 @@ func sanitizeID(s string) string {
 func lastSegment(path string) string {
 	parts := strings.Split(path, "/")
 	return parts[len(parts)-1]
+}
+
+// buildFunctionGraph produces a function-level call graph for all packages.
+// It tracks intra-package calls (simple identifier calls, not pkg.Method).
+func buildFunctionGraph(packages map[string]*pkgInfo) ([]FuncNode, []FuncEdge) {
+	type funcKey struct{ pkg, name string }
+
+	// Build node ID map and node list
+	funcIDs := map[funcKey]string{}
+	var nodes []FuncNode
+
+	for pkgPath, pkg := range packages {
+		for _, fn := range pkg.functions {
+			id := sanitizeID(pkgPath + "__" + fn.Name)
+			funcIDs[funcKey{pkgPath, fn.Name}] = id
+			nodes = append(nodes, FuncNode{
+				ID:       id,
+				Label:    fn.Name,
+				Package:  pkgPath,
+				Params:   fn.Params,
+				Returns:  fn.Returns,
+				Position: map[string]float64{"x": 0, "y": 0},
+			})
+		}
+	}
+
+	// Collect call edges: caller → callee with argument strings
+	type callRecord struct {
+		source, target string
+		args           []string
+	}
+	edgeArgs := map[string][]string{} // "src->tgt" → []argStr per call site
+
+	for pkgPath, pkg := range packages {
+		pkgFuncs := map[string]bool{}
+		for _, fn := range pkg.functions {
+			pkgFuncs[fn.Name] = true
+		}
+
+		for _, file := range pkg.files {
+			for _, decl := range file.Decls {
+				fnDecl, ok := decl.(*ast.FuncDecl)
+				if !ok || fnDecl.Body == nil {
+					continue
+				}
+				callerName := fnDecl.Name.Name
+				callerID, callerKnown := funcIDs[funcKey{pkgPath, callerName}]
+				if !callerKnown {
+					continue
+				}
+
+				ast.Inspect(fnDecl.Body, func(n ast.Node) bool {
+					call, ok := n.(*ast.CallExpr)
+					if !ok {
+						return true
+					}
+					ident, ok := call.Fun.(*ast.Ident)
+					if !ok {
+						return true // skip pkg.Method and method calls
+					}
+					calleeName := ident.Name
+					if !pkgFuncs[calleeName] || calleeName == callerName {
+						return true
+					}
+					calleeID := funcIDs[funcKey{pkgPath, calleeName}]
+					argParts := make([]string, len(call.Args))
+					for i, a := range call.Args {
+						argParts[i] = exprString(a)
+					}
+					key := callerID + "->" + calleeID
+					edgeArgs[key] = append(edgeArgs[key], strings.Join(argParts, ", "))
+					return true
+				})
+			}
+		}
+	}
+
+	// Build edges
+	var edges []FuncEdge
+	edgeIdx := 0
+	for key, calls := range edgeArgs {
+		parts := strings.SplitN(key, "->", 2)
+		label := calls[0]
+		if len(calls) > 1 {
+			label = "×" + strconv.Itoa(len(calls)) + ": " + strings.Join(calls, " | ")
+		}
+		edges = append(edges, FuncEdge{
+			ID:     "fe" + strconv.Itoa(edgeIdx),
+			Source: parts[0],
+			Target: parts[1],
+			Label:  label,
+		})
+		edgeIdx++
+	}
+
+	applyFuncLayout(nodes, edges)
+	return nodes, edges
+}
+
+// exprString converts an AST expression to a readable string for edge labels.
+func exprString(expr ast.Expr) string {
+	switch e := expr.(type) {
+	case *ast.BasicLit:
+		return e.Value
+	case *ast.Ident:
+		return e.Name
+	case *ast.CallExpr:
+		fnStr := exprString(e.Fun)
+		args := make([]string, len(e.Args))
+		for i, a := range e.Args {
+			args[i] = exprString(a)
+		}
+		return fnStr + "(" + strings.Join(args, ", ") + ")"
+	case *ast.SelectorExpr:
+		return exprString(e.X) + "." + e.Sel.Name
+	case *ast.BinaryExpr:
+		return exprString(e.X) + " " + e.Op.String() + " " + exprString(e.Y)
+	case *ast.UnaryExpr:
+		return e.Op.String() + exprString(e.X)
+	}
+	return "_"
+}
+
+// applyFuncLayout assigns positions using BFS from "main" functions.
+func applyFuncLayout(nodes []FuncNode, edges []FuncEdge) {
+	layers := map[string]int{}
+	for i := range nodes {
+		if nodes[i].Label == "main" {
+			layers[nodes[i].ID] = 0
+		}
+	}
+
+	changed := true
+	for changed {
+		changed = false
+		for _, e := range edges {
+			srcLayer, ok := layers[e.Source]
+			if !ok {
+				continue
+			}
+			tgtLayer, exists := layers[e.Target]
+			if !exists || tgtLayer < srcLayer+1 {
+				layers[e.Target] = srcLayer + 1
+				changed = true
+			}
+		}
+	}
+
+	maxLayer := 0
+	for _, l := range layers {
+		if l > maxLayer {
+			maxLayer = l
+		}
+	}
+	for i := range nodes {
+		if _, ok := layers[nodes[i].ID]; !ok {
+			layers[nodes[i].ID] = maxLayer + 1
+		}
+	}
+
+	layerNodes := map[int][]int{}
+	for i, n := range nodes {
+		l := layers[n.ID]
+		layerNodes[l] = append(layerNodes[l], i)
+	}
+
+	xSpacing := 280.0
+	ySpacing := 160.0
+	for layer, indices := range layerNodes {
+		for j, idx := range indices {
+			nodes[idx].Position["x"] = float64(layer) * xSpacing
+			nodes[idx].Position["y"] = float64(j) * ySpacing
+		}
+	}
 }

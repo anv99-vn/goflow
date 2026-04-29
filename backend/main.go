@@ -83,7 +83,6 @@ func handleAnalyzeFile(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 50 MB limit for multiple files
 	if err := r.ParseMultipartForm(50 << 20); err != nil {
 		http.Error(w, "failed to parse form: "+err.Error(), http.StatusBadRequest)
 		return
@@ -104,20 +103,32 @@ func handleAnalyzeFile(w http.ResponseWriter, r *http.Request) {
 
 	for _, fh := range fileHeaders {
 		if !strings.HasSuffix(fh.Filename, ".go") {
-			continue // skip non-Go files silently
+			continue
 		}
 		f, err := fh.Open()
 		if err != nil {
-			http.Error(w, "failed to open file: "+err.Error(), http.StatusInternalServerError)
+			http.Error(w, "failed to open uploaded file: "+err.Error(), http.StatusInternalServerError)
 			return
 		}
 		content, err := io.ReadAll(f)
 		f.Close()
 		if err != nil {
-			http.Error(w, "failed to read file: "+err.Error(), http.StatusInternalServerError)
+			http.Error(w, "failed to read uploaded file: "+err.Error(), http.StatusInternalServerError)
 			return
 		}
-		if err := os.WriteFile(filepath.Join(tmpDir, fh.Filename), content, 0644); err != nil {
+
+		// Group into subdirectory named after the package declaration so the
+		// analyzer can distinguish packages when files come from multiple packages.
+		pkgName := parsePackageName(content)
+		if pkgName == "" {
+			pkgName = "main"
+		}
+		pkgDir := filepath.Join(tmpDir, pkgName)
+		if err := os.MkdirAll(pkgDir, 0755); err != nil {
+			http.Error(w, "failed to create package dir: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
+		if err := os.WriteFile(filepath.Join(pkgDir, fh.Filename), content, 0644); err != nil {
 			http.Error(w, "failed to write temp file: "+err.Error(), http.StatusInternalServerError)
 			return
 		}
@@ -131,6 +142,20 @@ func handleAnalyzeFile(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(graph)
+}
+
+// parsePackageName extracts the package name from Go source bytes without a full parse.
+func parsePackageName(src []byte) string {
+	for _, line := range strings.Split(string(src), "\n") {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "package ") {
+			parts := strings.Fields(line)
+			if len(parts) >= 2 {
+				return parts[1]
+			}
+		}
+	}
+	return ""
 }
 
 func handleHealth(w http.ResponseWriter, r *http.Request) {

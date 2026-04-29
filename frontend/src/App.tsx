@@ -345,35 +345,67 @@ export default function App() {
           </>
         ) : (
           <>
-            <label
-              style={{
-                background: loading ? "#334155" : "#0ea5e9",
-                color: "#fff",
-                borderRadius: 8,
-                padding: "8px 20px",
-                fontWeight: 600,
-                fontSize: 13,
-                cursor: loading ? "not-allowed" : "pointer",
-                transition: "background 0.2s",
-                display: "flex",
-                alignItems: "center",
-                gap: 8,
-                flexShrink: 0,
-                userSelect: "none",
-              }}
-            >
-              <input
-                type="file"
-                multiple
-                // @ts-ignore
-                webkitdirectory=""
-                onChange={handleFileChange}
-                disabled={loading}
-                style={{ display: "none" }}
-              />
-              <span style={{ fontSize: 15 }}>📂</span>
-              {loading ? "Analyzing..." : selectedFiles.length === 0 ? "Choose .go files" : "Add more files"}
-            </label>
+            <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+              {/* Folder upload */}
+              <label
+                style={{
+                  background: loading ? "#334155" : "#0ea5e9",
+                  color: "#fff",
+                  borderRadius: 8,
+                  padding: "8px 20px",
+                  fontWeight: 600,
+                  fontSize: 13,
+                  cursor: loading ? "not-allowed" : "pointer",
+                  transition: "background 0.2s",
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 8,
+                  flexShrink: 0,
+                  userSelect: "none",
+                }}
+              >
+                <input
+                  type="file"
+                  // @ts-ignore
+                  webkitdirectory=""
+                  onChange={handleFileChange}
+                  disabled={loading}
+                  style={{ display: "none" }}
+                />
+                <span style={{ fontSize: 15 }}>📁</span>
+                Upload Folder
+              </label>
+
+              {/* Multiple files upload */}
+              <label
+                style={{
+                  background: loading ? "#334155" : "#0ea5e9",
+                  color: "#fff",
+                  borderRadius: 8,
+                  padding: "8px 20px",
+                  fontWeight: 600,
+                  fontSize: 13,
+                  cursor: loading ? "not-allowed" : "pointer",
+                  transition: "background 0.2s",
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 8,
+                  flexShrink: 0,
+                  userSelect: "none",
+                }}
+              >
+                <input
+                  type="file"
+                  multiple
+                  onChange={handleFileChange}
+                  disabled={loading}
+                  style={{ display: "none" }}
+                />
+                <span style={{ fontSize: 15 }}>📄</span>
+                Upload Files
+              </label>
+            </div>
+
             {selectedFiles.length > 0 && (
               <div style={{ display: "flex", alignItems: "center", gap: 5, flexWrap: "wrap", maxWidth: 480 }}>
                 {selectedFiles.map((f) => (
@@ -495,7 +527,7 @@ export default function App() {
             ) : (
               <>
                 <div style={{ fontSize: 16, fontWeight: 600 }}>Choose .go files to visualize their data flow</div>
-                <div style={{ fontSize: 13 }}>Click "Choose .go files" above · Or drag & drop multiple .go files here</div>
+                <div style={{ fontSize: 13 }}>Click "Upload Folder" or "Upload Files" above · Or drag & drop files/folders here</div>
               </>
             )}
           </div>

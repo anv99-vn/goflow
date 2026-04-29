@@ -128,7 +128,9 @@ func handleAnalyzeFile(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "failed to create package dir: "+err.Error(), http.StatusInternalServerError)
 			return
 		}
-		if err := os.WriteFile(filepath.Join(pkgDir, fh.Filename), content, 0644); err != nil {
+		// Use base filename only to avoid path issues with folder uploads
+		baseName := filepath.Base(fh.Filename)
+		if err := os.WriteFile(filepath.Join(pkgDir, baseName), content, 0644); err != nil {
 			http.Error(w, "failed to write temp file: "+err.Error(), http.StatusInternalServerError)
 			return
 		}

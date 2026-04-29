@@ -84,25 +84,14 @@ func Analyze(rootDir string) (*Graph, error) {
 		graph.Nodes = append(graph.Nodes, *n)
 	}
 
-	// Build edges from function calls between packages
+	// Build edges only between internal (project) packages — skip external deps
 	edgeIdx := 0
 	for srcPath, pkg := range packages {
 		for _, fn := range pkg.functions {
 			for _, calledPkg := range fn.CallsTo {
+				// skip packages not in the project (external / stdlib)
 				if _, exists := nodeMap[calledPkg]; !exists {
-					// external package not in project
-					extID := sanitizeID(calledPkg)
-					extLabel := lastSegment(calledPkg)
-					if _, added := nodeMap[calledPkg]; !added {
-						nodeMap[calledPkg] = &Node{
-							ID:      extID,
-							Label:   extLabel,
-							Package: calledPkg,
-							Type:    "external",
-							Position: map[string]float64{"x": 0, "y": 0},
-						}
-						graph.Nodes = append(graph.Nodes, *nodeMap[calledPkg])
-					}
+					continue
 				}
 
 				edgeKey := srcPath + "->" + calledPkg

@@ -11,10 +11,11 @@ import {
 } from "@xyflow/react";
 import type { Connection, Edge, Node } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
-import type { Graph, PackageNode } from "./types";
+import type { Graph, PackageNode, FuncNode } from "./types";
 import { PackageNodeComponent } from "./components/PackageNode";
 import { FunctionNodeComponent } from "./components/FunctionNode";
 import { DetailPanel } from "./components/DetailPanel";
+import { FunctionDetailPanel } from "./components/FunctionDetailPanel";
 
 const NODE_TYPES = {
   packageNode: PackageNodeComponent,
@@ -43,11 +44,29 @@ function graphToFlow(graph: Graph): { nodes: Node[]; edges: Edge[] } {
   return { nodes, edges };
 }
 
-function funcGraphToFlow(graph: Graph): { nodes: Node[]; edges: Edge[] } {
+// --- Saved positions (localStorage) ---
+const FUNC_POS_KEY = "goflow:func-positions";
+
+type SavedPositions = Record<string, { x: number; y: number }>;
+
+function loadFuncPositions(): SavedPositions {
+  try { return JSON.parse(localStorage.getItem(FUNC_POS_KEY) ?? "{}"); }
+  catch { return {}; }
+}
+
+function persistFuncPositions(pos: SavedPositions) {
+  localStorage.setItem(FUNC_POS_KEY, JSON.stringify(pos));
+}
+// ----------------------------------------
+
+function funcGraphToFlow(
+  graph: Graph,
+  savedPos: SavedPositions = {}
+): { nodes: Node[]; edges: Edge[] } {
   const nodes: Node[] = (graph.functionNodes ?? []).map((n) => ({
     id: n.id,
     type: "functionNode",
-    position: n.position,
+    position: savedPos[n.id] ?? n.position,
     data: { ...n },
   }));
 
@@ -77,6 +96,8 @@ export default function App() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [selectedNode, setSelectedNode] = useState<PackageNode | null>(null);
+  const [selectedFuncNode, setSelectedFuncNode] = useState<FuncNode | null>(null);
+  const [funcPositions, setFuncPositions] = useState<SavedPositions>(loadFuncPositions);
 
   const [nodes, setNodes, onNodesChange] = useNodesState<Node>([]);
   const [edges, setEdges, onEdgesChange] = useEdgesState<Edge>([]);
@@ -86,14 +107,15 @@ export default function App() {
   );
 
   const applyGraph = useCallback(
-    (graph: Graph, vm: ViewMode = "package") => {
+    (graph: Graph, vm: ViewMode = "package", savedPos?: SavedPositions) => {
       setCurrentGraph(graph);
+      const pos = savedPos ?? funcPositions;
       const { nodes: n, edges: e } =
-        vm === "function" ? funcGraphToFlow(graph) : graphToFlow(graph);
+        vm === "function" ? funcGraphToFlow(graph, pos) : graphToFlow(graph);
       setNodes(n);
       setEdges(e);
     },
-    [setNodes, setEdges]
+    [setNodes, setEdges, funcPositions]
   );
 
   const analyze = useCallback(async () => {
@@ -101,6 +123,7 @@ export default function App() {
     setLoading(true);
     setError("");
     setSelectedNode(null);
+    setSelectedFuncNode(null);
 
     try {
       const res = await fetch("/api/analyze", {
@@ -201,7 +224,22 @@ export default function App() {
   );
 
   const onNodeClick = useCallback((_: React.MouseEvent, node: Node) => {
-    setSelectedNode(node.data as unknown as PackageNode);
+    if (node.type === "functionNode") {
+      setSelectedFuncNode(node.data as unknown as FuncNode);
+      setSelectedNode(null);
+    } else {
+      setSelectedNode(node.data as unknown as PackageNode);
+      setSelectedFuncNode(null);
+    }
+  }, []);
+
+  const onNodeDragStop = useCallback((_: React.MouseEvent, node: Node) => {
+    if (node.type !== "functionNode") return;
+    setFuncPositions((prev) => {
+      const next = { ...prev, [node.id]: node.position };
+      persistFuncPositions(next);
+      return next;
+    });
   }, []);
 
   const stats = useMemo(() => {
@@ -216,6 +254,7 @@ export default function App() {
     setCurrentGraph(null);
     setError("");
     setSelectedNode(null);
+    setSelectedFuncNode(null);
     setNodes([]);
     setEdges([]);
     setSelectedFiles([]);
@@ -225,8 +264,9 @@ export default function App() {
     if (!currentGraph) return;
     setViewMode(vm);
     setSelectedNode(null);
+    setSelectedFuncNode(null);
     const { nodes: n, edges: e } =
-      vm === "function" ? funcGraphToFlow(currentGraph) : graphToFlow(currentGraph);
+      vm === "function" ? funcGraphToFlow(currentGraph, funcPositions) : graphToFlow(currentGraph);
     setNodes(n);
     setEdges(e);
   };
@@ -489,6 +529,7 @@ export default function App() {
           onEdgesChange={onEdgesChange}
           onConnect={onConnect}
           onNodeClick={onNodeClick}
+          onNodeDragStop={onNodeDragStop}
           nodeTypes={NODE_TYPES}
           fitView
           fitViewOptions={{ padding: 0.2 }}
@@ -510,6 +551,10 @@ export default function App() {
         <DetailPanel
           node={selectedNode}
           onClose={() => setSelectedNode(null)}
+        />
+        <FunctionDetailPanel
+          node={selectedFuncNode}
+          onClose={() => setSelectedFuncNode(null)}
         />
       </div>
     </div>

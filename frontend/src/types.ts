@@ -29,6 +29,8 @@ export interface FuncNode {
   package: string;
   params: string[];
   returns: string[];
+  body: string;
+  missing?: boolean;
   position: { x: number; y: number };
 }
 

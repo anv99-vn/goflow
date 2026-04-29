@@ -47,7 +47,18 @@ type FuncNode struct {
 	Package  string             `json:"package"`
 	Params   []string           `json:"params"`
 	Returns  []string           `json:"returns"`
+	Body     string             `json:"body"`
+	Missing  bool               `json:"missing,omitempty"` // called but not defined in analyzed files
 	Position map[string]float64 `json:"position"`
+}
+
+// goBuiltins lists Go built-in identifiers that should not be treated as missing functions.
+var goBuiltins = map[string]bool{
+	"append": true, "cap": true, "clear": true, "close": true,
+	"complex": true, "copy": true, "delete": true, "imag": true,
+	"len": true, "make": true, "max": true, "min": true,
+	"new": true, "panic": true, "print": true, "println": true,
+	"real": true, "recover": true,
 }
 
 // FuncEdge is a directed call edge between two functions
@@ -368,16 +379,21 @@ func applyLayout(g *Graph) {
 
 	// group by layer
 	layerNodes := map[int][]int{}
+	maxLayer := 0
 	for i, n := range g.Nodes {
 		l := layers[n.ID]
 		layerNodes[l] = append(layerNodes[l], i)
+		if l > maxLayer {
+			maxLayer = l
+		}
 	}
 
+	// Entrypoint (layer 0) on the right; deepest dependency on the left.
 	xSpacing := 250.0
 	ySpacing := 150.0
 	for layer, indices := range layerNodes {
 		for j, idx := range indices {
-			g.Nodes[idx].Position["x"] = float64(layer) * xSpacing
+			g.Nodes[idx].Position["x"] = float64(maxLayer-layer) * xSpacing
 			g.Nodes[idx].Position["y"] = float64(j) * ySpacing
 		}
 	}
@@ -412,17 +428,15 @@ func buildFunctionGraph(packages map[string]*pkgInfo) ([]FuncNode, []FuncEdge) {
 				Package:  pkgPath,
 				Params:   fn.Params,
 				Returns:  fn.Returns,
+				Body:     fn.Body,
 				Position: map[string]float64{"x": 0, "y": 0},
 			})
 		}
 	}
 
-	// Collect call edges: caller → callee with argument strings
-	type callRecord struct {
-		source, target string
-		args           []string
-	}
+	// Collect call edges; also detect calls to undefined functions (missing nodes).
 	edgeArgs := map[string][]string{} // "src->tgt" → []argStr per call site
+	missingAdded := map[string]bool{} // tracks missing node IDs already appended
 
 	for pkgPath, pkg := range packages {
 		pkgFuncs := map[string]bool{}
@@ -452,16 +466,38 @@ func buildFunctionGraph(packages map[string]*pkgInfo) ([]FuncNode, []FuncEdge) {
 						return true // skip pkg.Method and method calls
 					}
 					calleeName := ident.Name
-					if !pkgFuncs[calleeName] || calleeName == callerName {
-						return true
+					if calleeName == callerName {
+						return true // skip direct recursion
 					}
-					calleeID := funcIDs[funcKey{pkgPath, calleeName}]
+
 					argParts := make([]string, len(call.Args))
 					for i, a := range call.Args {
 						argParts[i] = exprString(a)
 					}
+					argStr := strings.Join(argParts, ", ")
+
+					var calleeID string
+					if pkgFuncs[calleeName] {
+						calleeID = funcIDs[funcKey{pkgPath, calleeName}]
+					} else if !goBuiltins[calleeName] {
+						// Called but not defined in any analyzed file → missing node
+						calleeID = "missing__" + calleeName
+						if !missingAdded[calleeID] {
+							missingAdded[calleeID] = true
+							nodes = append(nodes, FuncNode{
+								ID:       calleeID,
+								Label:    calleeName,
+								Package:  "?",
+								Missing:  true,
+								Position: map[string]float64{"x": 0, "y": 0},
+							})
+						}
+					} else {
+						return true // built-in, skip
+					}
+
 					key := callerID + "->" + calleeID
-					edgeArgs[key] = append(edgeArgs[key], strings.Join(argParts, ", "))
+					edgeArgs[key] = append(edgeArgs[key], argStr)
 					return true
 				})
 			}
@@ -557,11 +593,12 @@ func applyFuncLayout(nodes []FuncNode, edges []FuncEdge) {
 		layerNodes[l] = append(layerNodes[l], i)
 	}
 
+	// main (layer 0) on the right; deepest callee on the left.
 	xSpacing := 280.0
 	ySpacing := 160.0
 	for layer, indices := range layerNodes {
 		for j, idx := range indices {
-			nodes[idx].Position["x"] = float64(layer) * xSpacing
+			nodes[idx].Position["x"] = float64(maxLayer-layer) * xSpacing
 			nodes[idx].Position["y"] = float64(j) * ySpacing
 		}
 	}

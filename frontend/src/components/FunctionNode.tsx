@@ -2,12 +2,13 @@ import { Handle, Position } from "@xyflow/react";
 import type { FuncNode } from "../types";
 
 const COLORS = {
-  main: { bg: "#1e1b4b", border: "#6366f1", accent: "#818cf8" },
-  fn:   { bg: "#0c2540", border: "#0ea5e9", accent: "#38bdf8" },
+  main:    { bg: "#1e1b4b", border: "#6366f1", accent: "#818cf8" },
+  fn:      { bg: "#0c2540", border: "#0ea5e9", accent: "#38bdf8" },
+  missing: { bg: "#2d0a0a", border: "#dc2626", accent: "#f87171" },
 };
 
 export function FunctionNodeComponent({ data }: { data: FuncNode }) {
-  const c = data.label === "main" ? COLORS.main : COLORS.fn;
+  const c = data.missing ? COLORS.missing : data.label === "main" ? COLORS.main : COLORS.fn;
 
   return (
     <div
@@ -38,7 +39,11 @@ export function FunctionNodeComponent({ data }: { data: FuncNode }) {
         <span style={{ color: c.accent, fontWeight: 700, fontSize: 13 }}>
           {data.label}
         </span>
-        <span style={{ color: "#475569", fontSize: 10 }}>func</span>
+        {data.missing ? (
+          <span style={{ color: "#f87171", fontSize: 9, background: "#450a0a", border: "1px solid #dc2626", borderRadius: 3, padding: "1px 5px" }}>missing</span>
+        ) : (
+          <span style={{ color: "#475569", fontSize: 10 }}>func</span>
+        )}
       </div>
 
       {/* Params & returns */}

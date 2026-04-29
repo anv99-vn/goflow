@@ -4,6 +4,15 @@ All notable changes to this project are documented here. Format follows [Convent
 
 ## 2026-04-29
 
+### [059521f](https://github.com/anv99-vn/goflow/commit/059521f) - feat: add function node deletion with restore capability
+
+#### Frontend
+- Add delete button (red ×) to FunctionNode component (not shown for main function)
+- Track hidden function IDs in App.tsx state
+- Filter hidden nodes and their edges in funcGraphToFlow
+- Add restore button in stats bar showing count of hidden functions
+- Auto-close detail panel when viewing deleted function
+
 ### [e88b2df](https://github.com/anv99-vn/goflow/commit/e88b2df) - feat: add struct nodes with detail panel and function integration
 
 #### Backend

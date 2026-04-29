@@ -108,6 +108,27 @@ function FunctionCard({ fn }: { fn: FunctionInfo }) {
           ))}
         </div>
       )}
+
+      {fn.body && (
+        <pre
+          style={{
+            marginTop: 8,
+            padding: "8px 10px",
+            background: "#0f172a",
+            borderRadius: 6,
+            fontSize: 11,
+            fontFamily: "monospace",
+            color: "#94a3b8",
+            overflowX: "auto",
+            whiteSpace: "pre-wrap",
+            wordBreak: "break-word",
+            maxHeight: 200,
+            overflowY: "auto",
+          }}
+        >
+          {fn.body}
+        </pre>
+      )}
     </div>
   );
 }

@@ -50,7 +50,8 @@ func (s *Store) filesDir(id string) string   { return filepath.Join(s.BaseDir, i
 func (s *Store) metaPath(id string) string   { return filepath.Join(s.projectDir(id), "meta.json") }
 func (s *Store) graphPath(id string) string  { return filepath.Join(s.projectDir(id), "graph.json") }
 func (s *Store) posPath(id string) string    { return filepath.Join(s.projectDir(id), "positions.json") }
-func (s *Store) hiddenPath(id string) string { return filepath.Join(s.projectDir(id), "hidden.json") }
+func (s *Store) hiddenPath(id string) string  { return filepath.Join(s.projectDir(id), "hidden.json") }
+func (s *Store) customPath(id string) string  { return filepath.Join(s.projectDir(id), "custom.json") }
 
 // List returns all stored project metas sorted by creation time.
 func (s *Store) List() ([]Meta, error) {
@@ -222,6 +223,24 @@ func (s *Store) LoadHiddenFuncs(id string) ([]string, error) {
 	}
 	var ids []string
 	return ids, json.Unmarshal(b, &ids)
+}
+
+// SaveCustom persists custom nodes/edges JSON blob.
+func (s *Store) SaveCustom(id string, data json.RawMessage) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return os.WriteFile(s.customPath(id), data, 0o644)
+}
+
+// LoadCustom returns saved custom graph, or an empty default if none.
+func (s *Store) LoadCustom(id string) (json.RawMessage, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	b, err := os.ReadFile(s.customPath(id))
+	if os.IsNotExist(err) {
+		return json.RawMessage(`{"nodes":[],"edges":[]}`), nil
+	}
+	return b, err
 }
 
 // LoadPositions returns saved node positions, or an empty map if none.

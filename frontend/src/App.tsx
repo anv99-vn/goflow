@@ -116,6 +116,9 @@ interface Project {
 
 type ViewMode = "package" | "function";
 
+interface CustomFuncNode { id: string; label: string; x: number; y: number; }
+interface CustomFuncEdge { id: string; source: string; target: string; }
+
 // ─── Debounce helper ──────────────────────────────────────────────────────────
 
 function useDebounce<T extends (...args: any[]) => void>(fn: T, delay: number): T {
@@ -144,6 +147,8 @@ export default function App() {
   const [savedPositions, setSavedPositions] = useState<SavedPositions>({});
   const [hiddenFuncIds, setHiddenFuncIds] = useState<Set<string>>(new Set());
   const [activeFuncId, setActiveFuncId] = useState<string | null>(null);
+  const [customFuncNodes, setCustomFuncNodes] = useState<CustomFuncNode[]>([]);
+  const [customFuncEdges, setCustomFuncEdges] = useState<CustomFuncEdge[]>([]);
 
   // UI state
   const [loading, setLoading] = useState(false);
@@ -156,10 +161,14 @@ export default function App() {
 
   const [nodes, setNodes, onNodesChange] = useNodesState<Node>([]);
   const [edges, setEdges, onEdgesChange] = useEdgesState<Edge>([]);
-  const onConnect = useCallback(
-    (p: Connection) => setEdges((eds) => addEdge(p, eds)),
-    [setEdges]
-  );
+
+  // Stable refs so callbacks don't go stale
+  const customFuncNodesRef = useRef<CustomFuncNode[]>([]);
+  const customFuncEdgesRef = useRef<CustomFuncEdge[]>([]);
+  const activeProjectIdRef = useRef<string | null>(null);
+  useEffect(() => { customFuncNodesRef.current = customFuncNodes; }, [customFuncNodes]);
+  useEffect(() => { customFuncEdgesRef.current = customFuncEdges; }, [customFuncEdges]);
+  useEffect(() => { activeProjectIdRef.current = activeProjectId; }, [activeProjectId]);
 
   const activeProject = useMemo(
     () => projects.find((p) => p.id === activeProjectId) ?? null,
@@ -179,14 +188,64 @@ export default function App() {
 
   const deleteFuncNode = useCallback(
     (id: string) => {
-      setHiddenFuncIds((prev) => new Set([...prev, id]));
+      if (id.startsWith("custom_")) {
+        // Full removal for custom nodes
+        setCustomFuncNodes((prev) => prev.filter((n) => n.id !== id));
+        setCustomFuncEdges((prev) => prev.filter((e) => e.source !== id && e.target !== id));
+        setNodes((nds) => nds.filter((n) => n.id !== id));
+        setEdges((eds) => eds.filter((e) => e.source !== id && e.target !== id));
+      } else {
+        // Hide analysis nodes
+        setHiddenFuncIds((prev) => new Set([...prev, id]));
+      }
       if (activeFuncId === id) {
         setSelectedFuncNode(null);
         setActiveFuncId(null);
       }
     },
-    [activeFuncId]
+    [activeFuncId, setNodes, setEdges]
   );
+
+  const renameCustomNode = useCallback((id: string, newLabel: string) => {
+    setCustomFuncNodes((prev) =>
+      prev.map((n) => (n.id === id ? { ...n, label: newLabel } : n))
+    );
+    setNodes((nds) =>
+      nds.map((n) =>
+        n.id === id ? { ...n, data: { ...n.data, label: newLabel } } : n
+      )
+    );
+  }, [setNodes]);
+
+  // Build ReactFlow nodes/edges from custom data and merge with analysis output
+  const mergeCustomIntoFlow = useCallback((
+    analysisNodes: Node[],
+    analysisEdges: Edge[],
+    customNodes: CustomFuncNode[],
+    customEdges: CustomFuncEdge[],
+    positions: SavedPositions,
+  ) => {
+    const cn: Node[] = customNodes.map((n) => ({
+      id: n.id,
+      type: "functionNode" as const,
+      position: positions[n.id] ?? { x: n.x, y: n.y },
+      data: {
+        id: n.id, label: n.label, package: "", params: [], returns: [], body: "",
+        isCustom: true,
+        onDelete: deleteFuncNode,
+        onRename: renameCustomNode,
+      },
+    }));
+    const visible = new Set([...analysisNodes.map((x) => x.id), ...cn.map((x) => x.id)]);
+    const ce: Edge[] = customEdges
+      .filter((e) => visible.has(e.source) && visible.has(e.target))
+      .map((e) => ({
+        id: e.id, source: e.source, target: e.target,
+        markerEnd: { type: MarkerType.ArrowClosed, color: "#4ade80" },
+        style: { stroke: "#4ade80" },
+      }));
+    return { nodes: [...analysisNodes, ...cn], edges: [...analysisEdges, ...ce] };
+  }, [deleteFuncNode, renameCustomNode]);
 
   const applyGraphWithPositions = useCallback(
     (graph: Graph, positions: SavedPositions, vm: ViewMode = "package") => {
@@ -218,13 +277,16 @@ export default function App() {
     setEdges([]);
 
     try {
-      const [graphRaw, positions, hiddenIds] = await Promise.all([
+      const [graphRaw, positions, hiddenIds, customRaw] = await Promise.all([
         db.loadGraph(id),
         db.loadPositions(id),
         db.loadHidden(id),
+        db.loadCustom(id),
       ]);
       setSavedPositions(positions);
       setHiddenFuncIds(new Set(hiddenIds));
+      setCustomFuncNodes(customRaw.nodes);
+      setCustomFuncEdges(customRaw.edges);
       if (graphRaw) {
         applyGraphWithPositions(graphRaw, positions, "package");
       }
@@ -298,6 +360,8 @@ export default function App() {
           setSavedPositions(positions);
           setViewMode("package");
           setHiddenFuncIds(new Set());
+          setCustomFuncNodes([]);
+          setCustomFuncEdges([]);
           applyGraphWithPositions(res.graph, positions, "package");
         }
       } catch (e) {
@@ -333,6 +397,8 @@ export default function App() {
           setSavedPositions(positions);
           setViewMode("package");
           setHiddenFuncIds(new Set());
+          setCustomFuncNodes([]);
+          setCustomFuncEdges([]);
           applyGraphWithPositions(res.graph, positions, "package");
         } else {
           setCurrentGraph(null);
@@ -370,37 +436,94 @@ export default function App() {
   );
 
   const debouncedSavePositions = useDebounce(savePositionsToBackend, 800);
+  const debouncedSaveHidden = useDebounce(db.saveHidden, 800);
+  const debouncedSaveCustom = useDebounce(db.saveCustom, 800);
 
   const onNodeDragStop = useCallback(
     (_: React.MouseEvent, node: Node) => {
+      const pos = node.position;
       setSavedPositions((prev) => {
-        const next = { ...prev, [node.id]: node.position };
+        const next = { ...prev, [node.id]: pos };
         if (activeProjectId) debouncedSavePositions(activeProjectId, next);
         return next;
       });
+      // Keep custom node x/y in sync so they survive re-renders
+      if (node.id.startsWith("custom_")) {
+        setCustomFuncNodes((prev) =>
+          prev.map((n) => (n.id === node.id ? { ...n, x: pos.x, y: pos.y } : n))
+        );
+      }
     },
     [activeProjectId, debouncedSavePositions]
   );
 
-  // ── Sync hidden/active func ──────────────────────────────────────────────
+  // onConnect — persists manually drawn edges
+  const onConnect = useCallback(
+    (p: Connection) => {
+      if (!p.source || !p.target) return;
+      const newEdge: CustomFuncEdge = {
+        id: `custom_edge_${Date.now()}`,
+        source: p.source,
+        target: p.target,
+      };
+      setCustomFuncEdges((prev) => [...prev, newEdge]);
+      setEdges((eds) =>
+        addEdge({
+          ...p,
+          id: newEdge.id,
+          markerEnd: { type: MarkerType.ArrowClosed, color: "#4ade80" },
+          style: { stroke: "#4ade80" },
+        }, eds)
+      );
+    },
+    [setEdges]
+  );
 
-  const debouncedSaveHidden = useDebounce(db.saveHidden, 800);
+  // addCustomNode — places a blank node at viewport center
+  const addCustomNode = useCallback(() => {
+    const id = `custom_${Date.now()}`;
+    const vp = rfRef.current?.getViewport() ?? { x: 0, y: 0, zoom: 1 };
+    const x = (window.innerWidth / 2 - vp.x) / vp.zoom;
+    const y = (window.innerHeight / 2 - vp.y) / vp.zoom;
+    const newCN: CustomFuncNode = { id, label: "newFunc", x, y };
+    setCustomFuncNodes((prev) => [...prev, newCN]);
+    setNodes((nds) => [
+      ...nds,
+      {
+        id,
+        type: "functionNode" as const,
+        position: { x, y },
+        data: {
+          id, label: "newFunc", package: "", params: [], returns: [], body: "",
+          isCustom: true,
+          onDelete: deleteFuncNode,
+          onRename: renameCustomNode,
+        },
+      },
+    ]);
+  }, [deleteFuncNode, renameCustomNode, setNodes]);
+
+  // ── Sync hidden/active func + custom ────────────────────────────────────
 
   useEffect(() => {
     if (!currentGraph || viewMode !== "function") return;
     const { nodes: n, edges: e } = funcGraphToFlow(
-      currentGraph,
-      savedPositions,
-      activeFuncId,
-      hiddenFuncIds,
-      deleteFuncNode
+      currentGraph, savedPositions, activeFuncId, hiddenFuncIds, deleteFuncNode
     );
-    setNodes(n);
-    setEdges(e);
+    const merged = mergeCustomIntoFlow(n, e, customFuncNodes, customFuncEdges, savedPositions);
+    setNodes(merged.nodes);
+    setEdges(merged.edges);
     if (activeProjectId) {
       debouncedSaveHidden(activeProjectId, [...hiddenFuncIds]);
     }
   }, [hiddenFuncIds]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Persist custom whenever it changes
+  useEffect(() => {
+    const pid = activeProjectIdRef.current;
+    if (!pid) return;
+    debouncedSaveCustom(pid, { nodes: customFuncNodesRef.current, edges: customFuncEdgesRef.current });
+  }, [customFuncNodes, customFuncEdges]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
     if (viewMode !== "function") return;
@@ -451,14 +574,18 @@ export default function App() {
       setSelectedFuncNode(null);
       setActiveFuncId(null);
       setSelectedStructNode(null);
-      const { nodes: n, edges: e } =
-        vm === "function"
-          ? funcGraphToFlow(currentGraph, savedPositions, null, hiddenFuncIds, deleteFuncNode)
-          : graphToFlow(currentGraph, savedPositions);
-      setNodes(n);
-      setEdges(e);
+      if (vm === "function") {
+        const { nodes: n, edges: e } = funcGraphToFlow(currentGraph, savedPositions, null, hiddenFuncIds, deleteFuncNode);
+        const merged = mergeCustomIntoFlow(n, e, customFuncNodes, customFuncEdges, savedPositions);
+        setNodes(merged.nodes);
+        setEdges(merged.edges);
+      } else {
+        const { nodes: n, edges: e } = graphToFlow(currentGraph, savedPositions);
+        setNodes(n);
+        setEdges(e);
+      }
     },
-    [currentGraph, savedPositions, hiddenFuncIds, deleteFuncNode, setNodes, setEdges]
+    [currentGraph, savedPositions, hiddenFuncIds, deleteFuncNode, customFuncNodes, customFuncEdges, mergeCustomIntoFlow, setNodes, setEdges]
   );
 
   const stats = useMemo(() => ({
@@ -513,6 +640,23 @@ export default function App() {
             )}
             <StatBadge label="edges" value={stats.edges} color="#475569" />
           </div>
+        )}
+
+        {/* Add node button (function view only) */}
+        {viewMode === "function" && (
+          <button
+            onClick={addCustomNode}
+            title="Add empty node"
+            style={{
+              background: "#0d2318", border: "1px solid #22c55e", borderRadius: 6,
+              color: "#4ade80", fontSize: 12, fontWeight: 600,
+              padding: "4px 12px", cursor: "pointer", display: "flex", alignItems: "center", gap: 5,
+            }}
+            onMouseEnter={(e) => { e.currentTarget.style.background = "#14532d"; }}
+            onMouseLeave={(e) => { e.currentTarget.style.background = "#0d2318"; }}
+          >
+            + Node
+          </button>
         )}
 
         {/* View mode */}
@@ -768,6 +912,18 @@ const db = {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(ids),
+    });
+  },
+  async loadCustom(id: string): Promise<{ nodes: CustomFuncNode[]; edges: CustomFuncEdge[] }> {
+    const r = await fetch(`/api/projects/${id}/custom`);
+    if (!r.ok) return { nodes: [], edges: [] };
+    return r.json();
+  },
+  async saveCustom(id: string, data: { nodes: CustomFuncNode[]; edges: CustomFuncEdge[] }): Promise<void> {
+    await fetch(`/api/projects/${id}/custom`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(data),
     });
   },
 };

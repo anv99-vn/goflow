@@ -53,6 +53,10 @@ func main() {
 	mux.HandleFunc("GET /api/projects/{id}/hidden", handleGetHidden)
 	mux.HandleFunc("PUT /api/projects/{id}/hidden", handleSaveHidden)
 
+	// Custom nodes/edges
+	mux.HandleFunc("GET /api/projects/{id}/custom", handleGetCustom)
+	mux.HandleFunc("PUT /api/projects/{id}/custom", handleSaveCustom)
+
 	mux.HandleFunc("/api/health", handleHealth)
 	mux.Handle("/", spaHandler())
 
@@ -282,6 +286,31 @@ func handleSaveHidden(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := db.SaveHiddenFuncs(r.PathValue("id"), ids); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// ── Custom nodes/edges handlers ───────────────────────────────────────────────
+
+func handleGetCustom(w http.ResponseWriter, r *http.Request) {
+	data, err := db.LoadCustom(r.PathValue("id"))
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.Write(data)
+}
+
+func handleSaveCustom(w http.ResponseWriter, r *http.Request) {
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		http.Error(w, "read body: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+	if err := db.SaveCustom(r.PathValue("id"), body); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}

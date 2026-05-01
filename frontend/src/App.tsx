@@ -5,8 +5,6 @@ import {
   Controls,
   MiniMap,
   addEdge,
-  useNodesState,
-  useEdgesState,
   MarkerType,
 } from "@xyflow/react";
 import type { Connection, Edge, Node } from "@xyflow/react";
@@ -119,9 +117,16 @@ type ViewMode = "package" | "function";
 interface CustomFuncNode { id: string; label: string; x: number; y: number; }
 interface CustomFuncEdge { id: string; source: string; target: string; }
 
+interface HistoryState {
+  savedPositions: SavedPositions;
+  customFuncNodes: CustomFuncNode[];
+  customFuncEdges: CustomFuncEdge[];
+  hiddenFuncIds: string[];
+}
+
 // ─── Debounce helper ──────────────────────────────────────────────────────────
 
-function useDebounce<T extends (...args: any[]) => void>(fn: T, delay: number): T {
+function useDebounce<T extends (...args: unknown[]) => void>(fn: T, delay: number): T {
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
   return useCallback(
     (...args: Parameters<T>) => {
@@ -150,44 +155,33 @@ export default function App() {
   const [customFuncNodes, setCustomFuncNodes] = useState<CustomFuncNode[]>([]);
   const [customFuncEdges, setCustomFuncEdges] = useState<CustomFuncEdge[]>([]);
 
-  // UI state
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState("");
-  const [selectedNode, setSelectedNode] = useState<PackageNode | null>(null);
-  const [selectedFuncNode, setSelectedFuncNode] = useState<FuncNode | null>(null);
-  const [selectedStructNode, setSelectedStructNode] = useState<StructNode | null>(null);
+  // Undo/Redo history
+  const [pastStates, setPastStates] = useState<HistoryState[]>([]);
+  const [futureStates, setFutureStates] = useState<HistoryState[]>([]);
+  const isUndoingRef = useRef<boolean>(false);
+  const rfRef = useRef<{ getViewport: () => { x: number; y: number; zoom: number }; setViewport: (vp: { x: number; y: number; zoom: number }, opts?: { duration: number }) => void } | null>(null);
+  const dragStartState = useRef<HistoryState | null>(null);
 
-  const rfRef = useRef<any>(null);
+  // Capture current state for history
+  const captureState = useCallback((): HistoryState => ({
+    savedPositions: { ...savedPositions },
+    customFuncNodes: [...customFuncNodes],
+    customFuncEdges: [...customFuncEdges],
+    hiddenFuncIds: [...hiddenFuncIds],
+  }), [savedPositions, customFuncNodes, customFuncEdges, hiddenFuncIds]);
 
-  const [nodes, setNodes, onNodesChange] = useNodesState<Node>([]);
-  const [edges, setEdges, onEdgesChange] = useEdgesState<Edge>([]);
-
-  // Stable refs so callbacks don't go stale
-  const customFuncNodesRef = useRef<CustomFuncNode[]>([]);
-  const customFuncEdgesRef = useRef<CustomFuncEdge[]>([]);
-  const activeProjectIdRef = useRef<string | null>(null);
-  useEffect(() => { customFuncNodesRef.current = customFuncNodes; }, [customFuncNodes]);
-  useEffect(() => { customFuncEdgesRef.current = customFuncEdges; }, [customFuncEdges]);
-  useEffect(() => { activeProjectIdRef.current = activeProjectId; }, [activeProjectId]);
-
-  const activeProject = useMemo(
-    () => projects.find((p) => p.id === activeProjectId) ?? null,
-    [projects, activeProjectId]
-  );
-
-  // ── Load projects on mount ───────────────────────────────────────────────
-
-  useEffect(() => {
-    fetch("/api/projects")
-      .then((r) => r.json())
-      .then((data: Project[]) => setProjects(data ?? []))
-      .catch(() => {});
-  }, []);
+  // Push current state to past and clear future
+  const pushHistory = useCallback(() => {
+    if (isUndoingRef.current) return;
+    setPastStates((prev) => [...prev, captureState()]);
+    setFutureStates([]);
+  }, [captureState]);
 
   // ── Graph application ────────────────────────────────────────────────────
 
   const deleteFuncNode = useCallback(
     (id: string) => {
+      pushHistory();
       if (id.startsWith("custom_")) {
         // Full removal for custom nodes
         setCustomFuncNodes((prev) => prev.filter((n) => n.id !== id));
@@ -203,10 +197,11 @@ export default function App() {
         setActiveFuncId(null);
       }
     },
-    [activeFuncId, setNodes, setEdges]
+    [activeFuncId, setNodes, setEdges, pushHistory]
   );
 
   const renameCustomNode = useCallback((id: string, newLabel: string) => {
+    pushHistory();
     setCustomFuncNodes((prev) =>
       prev.map((n) => (n.id === id ? { ...n, label: newLabel } : n))
     );
@@ -215,7 +210,7 @@ export default function App() {
         n.id === id ? { ...n, data: { ...n.data, label: newLabel } } : n
       )
     );
-  }, [setNodes]);
+  }, [setNodes, pushHistory]);
 
   // Build ReactFlow nodes/edges from custom data and merge with analysis output
   const mergeCustomIntoFlow = useCallback((
@@ -246,6 +241,108 @@ export default function App() {
       }));
     return { nodes: [...analysisNodes, ...cn], edges: [...analysisEdges, ...ce] };
   }, [deleteFuncNode, renameCustomNode]);
+
+  const undo = useCallback(() => {
+    if (pastStates.length === 0) return;
+    isUndoingRef.current = true;
+    const prevState = pastStates[pastStates.length - 1];
+    const currentState = captureState();
+    setPastStates((prev) => prev.slice(0, -1));
+    setFutureStates((prev) => [...prev, currentState]);
+    setSavedPositions(prevState.savedPositions);
+    setCustomFuncNodes(prevState.customFuncNodes);
+    setCustomFuncEdges(prevState.customFuncEdges);
+    setHiddenFuncIds(new Set(prevState.hiddenFuncIds));
+    // Re-apply graph with restored state
+    if (currentGraph) {
+      if (viewMode === "function") {
+        const { nodes: n, edges: e } = funcGraphToFlow(
+          currentGraph, prevState.savedPositions, null, new Set(prevState.hiddenFuncIds), deleteFuncNode
+        );
+        const merged = mergeCustomIntoFlow(n, e, prevState.customFuncNodes, prevState.customFuncEdges, prevState.savedPositions);
+        setNodes(merged.nodes);
+        setEdges(merged.edges);
+      } else {
+        const { nodes: n, edges: e } = graphToFlow(currentGraph, prevState.savedPositions);
+        setNodes(n);
+        setEdges(e);
+      }
+    }
+    setTimeout(() => { isUndoingRef.current = false; }, 0);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pastStates, captureState, currentGraph, viewMode, funcGraphToFlow, mergeCustomIntoFlow, setNodes, setEdges, deleteFuncNode]);
+
+  const redo = useCallback(() => {
+    if (futureStates.length === 0) return;
+    isUndoingRef.current = true;
+    const nextState = futureStates[futureStates.length - 1];
+    const currentState = captureState();
+    setFutureStates((prev) => prev.slice(0, -1));
+    setPastStates((prev) => [...prev, currentState]);
+    setSavedPositions(nextState.savedPositions);
+    setCustomFuncNodes(nextState.customFuncNodes);
+    setCustomFuncEdges(nextState.customFuncEdges);
+    setHiddenFuncIds(new Set(nextState.hiddenFuncIds));
+    if (currentGraph) {
+      if (viewMode === "function") {
+        const { nodes: n, edges: e } = funcGraphToFlow(
+          currentGraph, nextState.savedPositions, null, new Set(nextState.hiddenFuncIds), deleteFuncNode
+        );
+        const merged = mergeCustomIntoFlow(n, e, nextState.customFuncNodes, nextState.customFuncEdges, nextState.savedPositions);
+        setNodes(merged.nodes);
+        setEdges(merged.edges);
+      } else {
+        const { nodes: n, edges: e } = graphToFlow(currentGraph, nextState.savedPositions);
+        setNodes(n);
+        setEdges(e);
+      }
+    }
+    setTimeout(() => { isUndoingRef.current = false; }, 0);
+  }, [futureStates, captureState, currentGraph, viewMode, funcGraphToFlow, mergeCustomIntoFlow, setNodes, setEdges]);
+
+  // Keyboard shortcuts for undo/redo
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      if ((e.ctrlKey || e.metaKey) && e.key === "z") {
+        e.preventDefault();
+        if (e.shiftKey) {
+          redo();
+        } else {
+          undo();
+        }
+      }
+      if ((e.ctrlKey || e.metaKey) && e.key === "y") {
+        e.preventDefault();
+        redo();
+      }
+    };
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
+  }, [undo, redo]);
+
+  // Stable refs so callbacks don't go stale
+  const customFuncNodesRef = useRef<CustomFuncNode[]>([]);
+  const customFuncEdgesRef = useRef<CustomFuncEdge[]>([]);
+  const activeProjectIdRef = useRef<string | null>(null);
+  useEffect(() => { customFuncNodesRef.current = customFuncNodes; }, [customFuncNodes]);
+  useEffect(() => { customFuncEdgesRef.current = customFuncEdges; }, [customFuncEdges]);
+  useEffect(() => { activeProjectIdRef.current = activeProjectId; }, [activeProjectId]);
+
+  const activeProject = useMemo(
+    () => projects.find((p) => p.id === activeProjectId) ?? null,
+    [projects, activeProjectId]
+  );
+
+  // ── Load projects on mount ───────────────────────────────────────────────
+
+  useEffect(() => {
+    fetch("/api/projects")
+      .then((r) => r.json())
+      .then((data: Project[]) => setProjects(data ?? []))
+      .catch(() => {});
+  }, []);
+
+  // ── Graph application ────────────────────────────────────────────
 
   const applyGraphWithPositions = useCallback(
     (graph: Graph, positions: SavedPositions, vm: ViewMode = "package") => {
@@ -442,6 +539,14 @@ export default function App() {
   const onNodeDragStop = useCallback(
     (_: React.MouseEvent, node: Node) => {
       const pos = node.position;
+      // Save to history if position changed
+      if (dragStartState.current && dragStartState.current.savedPositions[node.id] &&
+          (dragStartState.current.savedPositions[node.id].x !== pos.x ||
+           dragStartState.current.savedPositions[node.id].y !== pos.y)) {
+        setPastStates((prev) => [...prev, dragStartState.current!]);
+        setFutureStates([]);
+      }
+      dragStartState.current = null;
       setSavedPositions((prev) => {
         const next = { ...prev, [node.id]: pos };
         if (activeProjectId) debouncedSavePositions(activeProjectId, next);
@@ -457,10 +562,19 @@ export default function App() {
     [activeProjectId, debouncedSavePositions]
   );
 
+  // onNodeDragStart — capture state before drag for undo
+  const onNodeDragStart = useCallback(
+    (_: React.MouseEvent, node: Node) => {
+      dragStartState.current = captureState();
+    },
+    [captureState]
+  );
+
   // onConnect — persists manually drawn edges
   const onConnect = useCallback(
     (p: Connection) => {
       if (!p.source || !p.target) return;
+      pushHistory();
       const newEdge: CustomFuncEdge = {
         id: `custom_edge_${Date.now()}`,
         source: p.source,
@@ -476,11 +590,12 @@ export default function App() {
         }, eds)
       );
     },
-    [setEdges]
+    [setEdges, pushHistory]
   );
 
   // addCustomNode — places a blank node at viewport center
   const addCustomNode = useCallback(() => {
+    pushHistory();
     const id = `custom_${Date.now()}`;
     const vp = rfRef.current?.getViewport() ?? { x: 0, y: 0, zoom: 1 };
     const x = (window.innerWidth / 2 - vp.x) / vp.zoom;
@@ -501,7 +616,7 @@ export default function App() {
         },
       },
     ]);
-  }, [deleteFuncNode, renameCustomNode, setNodes]);
+  }, [deleteFuncNode, renameCustomNode, setNodes, pushHistory]);
 
   // ── Sync hidden/active func + custom ────────────────────────────────────
 
@@ -621,6 +736,44 @@ export default function App() {
             {isGDScript ? "GDScript" : "Go"}
           </span>
         )}
+
+        {/* Undo/Redo buttons */}
+        <div style={{ display: "flex", gap: 4 }}>
+          <button
+            onClick={undo}
+            disabled={pastStates.length === 0}
+            title="Undo (Ctrl+Z)"
+            style={{
+              background: pastStates.length > 0 ? "#1e293b" : "#0f172a",
+              color: pastStates.length > 0 ? "#7dd3fc" : "#334155",
+              border: `1px solid ${pastStates.length > 0 ? "#334155" : "#1e293b"}`,
+              borderRadius: 4, padding: "4px 8px", fontSize: 12, fontWeight: 600,
+              cursor: pastStates.length > 0 ? "pointer" : "not-allowed",
+              display: "flex", alignItems: "center", gap: 3,
+            }}
+            onMouseEnter={(e) => { if (pastStates.length > 0) e.currentTarget.style.background = "#334155"; }}
+            onMouseLeave={(e) => { if (pastStates.length > 0) e.currentTarget.style.background = "#1e293b"; }}
+          >
+            ↩ Undo
+          </button>
+          <button
+            onClick={redo}
+            disabled={futureStates.length === 0}
+            title="Redo (Ctrl+Shift+Z or Ctrl+Y)"
+            style={{
+              background: futureStates.length > 0 ? "#1e293b" : "#0f172a",
+              color: futureStates.length > 0 ? "#7dd3fc" : "#334155",
+              border: `1px solid ${futureStates.length > 0 ? "#334155" : "#1e293b"}`,
+              borderRadius: 4, padding: "4px 8px", fontSize: 12, fontWeight: 600,
+              cursor: futureStates.length > 0 ? "pointer" : "not-allowed",
+              display: "flex", alignItems: "center", gap: 3,
+            }}
+            onMouseEnter={(e) => { if (futureStates.length > 0) e.currentTarget.style.background = "#334155"; }}
+            onMouseLeave={(e) => { if (futureStates.length > 0) e.currentTarget.style.background = "#1e293b"; }}
+          >
+            ↪ Redo
+          </button>
+        </div>
 
         <div style={{ flex: 1 }} />
 
@@ -822,6 +975,7 @@ export default function App() {
                   nodes={nodes} edges={edges}
                   onNodesChange={onNodesChange} onEdgesChange={onEdgesChange}
                   onConnect={onConnect} onNodeClick={onNodeClick}
+                  onNodeDragStart={onNodeDragStart}
                   onNodeDragStop={onNodeDragStop}
                   nodeTypes={NODE_TYPES}
                   fitView fitViewOptions={{ padding: 0.2 }}

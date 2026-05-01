@@ -49,6 +49,10 @@ func main() {
 	mux.HandleFunc("GET /api/projects/{id}/positions", handleGetPositions)
 	mux.HandleFunc("PUT /api/projects/{id}/positions", handleSavePositions)
 
+	// Hidden function nodes
+	mux.HandleFunc("GET /api/projects/{id}/hidden", handleGetHidden)
+	mux.HandleFunc("PUT /api/projects/{id}/hidden", handleSaveHidden)
+
 	mux.HandleFunc("/api/health", handleHealth)
 	mux.Handle("/", spaHandler())
 
@@ -254,6 +258,30 @@ func handleSavePositions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := db.SavePositions(r.PathValue("id"), pos); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// ── Hidden-function handlers ──────────────────────────────────────────────────
+
+func handleGetHidden(w http.ResponseWriter, r *http.Request) {
+	ids, err := db.LoadHiddenFuncs(r.PathValue("id"))
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	jsonOK(w, ids)
+}
+
+func handleSaveHidden(w http.ResponseWriter, r *http.Request) {
+	var ids []string
+	if err := json.NewDecoder(r.Body).Decode(&ids); err != nil {
+		http.Error(w, "bad body: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+	if err := db.SaveHiddenFuncs(r.PathValue("id"), ids); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}

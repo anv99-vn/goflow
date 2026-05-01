@@ -218,11 +218,13 @@ export default function App() {
     setEdges([]);
 
     try {
-      const [graphRaw, positions] = await Promise.all([
+      const [graphRaw, positions, hiddenIds] = await Promise.all([
         db.loadGraph(id),
         db.loadPositions(id),
+        db.loadHidden(id),
       ]);
       setSavedPositions(positions);
+      setHiddenFuncIds(new Set(hiddenIds));
       if (graphRaw) {
         applyGraphWithPositions(graphRaw, positions, "package");
       }
@@ -382,6 +384,8 @@ export default function App() {
 
   // ── Sync hidden/active func ──────────────────────────────────────────────
 
+  const debouncedSaveHidden = useDebounce(db.saveHidden, 800);
+
   useEffect(() => {
     if (!currentGraph || viewMode !== "function") return;
     const { nodes: n, edges: e } = funcGraphToFlow(
@@ -393,6 +397,9 @@ export default function App() {
     );
     setNodes(n);
     setEdges(e);
+    if (activeProjectId) {
+      debouncedSaveHidden(activeProjectId, [...hiddenFuncIds]);
+    }
   }, [hiddenFuncIds]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
@@ -750,6 +757,18 @@ const db = {
     const r = await fetch(`/api/projects/${id}/positions`);
     if (!r.ok) return {};
     return r.json();
+  },
+  async loadHidden(id: string): Promise<string[]> {
+    const r = await fetch(`/api/projects/${id}/hidden`);
+    if (!r.ok) return [];
+    return r.json();
+  },
+  async saveHidden(id: string, ids: string[]): Promise<void> {
+    await fetch(`/api/projects/${id}/hidden`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(ids),
+    });
   },
 };
 

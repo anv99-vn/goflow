@@ -50,6 +50,7 @@ func (s *Store) filesDir(id string) string   { return filepath.Join(s.BaseDir, i
 func (s *Store) metaPath(id string) string   { return filepath.Join(s.projectDir(id), "meta.json") }
 func (s *Store) graphPath(id string) string  { return filepath.Join(s.projectDir(id), "graph.json") }
 func (s *Store) posPath(id string) string    { return filepath.Join(s.projectDir(id), "positions.json") }
+func (s *Store) hiddenPath(id string) string { return filepath.Join(s.projectDir(id), "hidden.json") }
 
 // List returns all stored project metas sorted by creation time.
 func (s *Store) List() ([]Meta, error) {
@@ -195,6 +196,32 @@ func (s *Store) SavePositions(id string, pos map[string]Position) error {
 		return err
 	}
 	return os.WriteFile(s.posPath(id), b, 0o644)
+}
+
+// SaveHiddenFuncs persists the set of hidden function node IDs.
+func (s *Store) SaveHiddenFuncs(id string, ids []string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	b, err := json.Marshal(ids)
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(s.hiddenPath(id), b, 0o644)
+}
+
+// LoadHiddenFuncs returns saved hidden function IDs, or an empty slice if none.
+func (s *Store) LoadHiddenFuncs(id string) ([]string, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	b, err := os.ReadFile(s.hiddenPath(id))
+	if os.IsNotExist(err) {
+		return []string{}, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	var ids []string
+	return ids, json.Unmarshal(b, &ids)
 }
 
 // LoadPositions returns saved node positions, or an empty map if none.

@@ -673,7 +673,7 @@ func applyFuncLayout(nodes []FuncNode, edges []FuncEdge) {
 		layerNodes[l] = append(layerNodes[l], i)
 	}
 
-	// main (layer 0) on the left; deepest callee on the right.
+	// callers on the left, callees on the right: layer 0 is leftmost.
 	xSpacing := 280.0
 	ySpacing := 160.0
 	for layer, indices := range layerNodes {

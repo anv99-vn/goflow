@@ -630,12 +630,36 @@ func exprString(expr ast.Expr) string {
 	return "_"
 }
 
-// applyFuncLayout assigns positions using BFS from "main" functions.
+// applyFuncLayout assigns positions using BFS from root functions.
+// Roots are nodes with label "main"; if none exist, any node with no
+// incoming edges is treated as a root so non-main packages still lay
+// out horizontally instead of collapsing into a single column.
 func applyFuncLayout(nodes []FuncNode, edges []FuncEdge) {
 	layers := map[string]int{}
+
+	// Seed with explicit "main" functions.
 	for i := range nodes {
 		if nodes[i].Label == "main" {
 			layers[nodes[i].ID] = 0
+		}
+	}
+
+	// Fall back to nodes with no incoming edges when there is no main.
+	if len(layers) == 0 {
+		hasIncoming := map[string]bool{}
+		for _, e := range edges {
+			hasIncoming[e.Target] = true
+		}
+		for i := range nodes {
+			if !hasIncoming[nodes[i].ID] {
+				layers[nodes[i].ID] = 0
+			}
+		}
+		// If every node has an incoming edge (cycle), seed all at 0.
+		if len(layers) == 0 {
+			for i := range nodes {
+				layers[nodes[i].ID] = 0
+			}
 		}
 	}
 

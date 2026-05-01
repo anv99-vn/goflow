@@ -4,6 +4,15 @@ All notable changes to this project are documented here. Format follows [Convent
 
 ## 2026-04-29
 
+### [e472b00](https://github.com/anv99-vn/goflow/commit/e472b00) - feat: auto-pan viewport when function node hidden behind detail panel
+
+#### Frontend
+- Add useRef to capture ReactFlow instance
+- Add auto-pan logic in onNodeClick for function nodes
+- Calculate if node position would overlap with panel (~470px from right)
+- Use setViewport with 300ms animation to pan left
+- Place node at ~35% of viewport width after pan
+
 ### [059521f](https://github.com/anv99-vn/goflow/commit/059521f) - feat: add function node deletion with restore capability
 
 #### Frontend

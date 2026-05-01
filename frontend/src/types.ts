@@ -63,6 +63,7 @@ export interface StructEdge {
 }
 
 export interface Graph {
+  language?: string; // "go" | "gdscript"
   nodes: PackageNode[];
   edges: FlowEdge[];
   functionNodes: FuncNode[];

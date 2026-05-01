@@ -1,23 +1,27 @@
 import { PrismLight as SyntaxHighlighter } from "react-syntax-highlighter";
 import go from "react-syntax-highlighter/dist/esm/languages/prism/go";
+import python from "react-syntax-highlighter/dist/esm/languages/prism/python";
 import { vscDarkPlus } from "react-syntax-highlighter/dist/esm/styles/prism";
 
 SyntaxHighlighter.registerLanguage("go", go);
+SyntaxHighlighter.registerLanguage("python", python); // GDScript is Python-like
 import type { FuncNode, StructNode } from "../types";
 
 interface Props {
   node: FuncNode | null;
   structNodes: StructNode[];
+  language?: string;
   onStructClick: (structNode: StructNode) => void;
   onClose: () => void;
 }
 
-export function FunctionDetailPanel({ node, structNodes, onStructClick, onClose }: Props) {
+export function FunctionDetailPanel({ node, structNodes, language = "go", onStructClick, onClose }: Props) {
   if (!node) return null;
+
+  const isGDScript = language === "gdscript";
 
   // Find structs used by this function
   const usedStructs = structNodes.filter((s) => {
-    // Check if struct name appears in params, returns, or body
     const allText = [...(node.params ?? []), ...(node.returns ?? []), node.body ?? ""].join(" ");
     return allText.includes(s.label);
   });
@@ -25,10 +29,16 @@ export function FunctionDetailPanel({ node, structNodes, onStructClick, onClose 
   // Reconstruct readable signature from parts
   const params = (node.params ?? []).join(", ");
   const returns = (node.returns ?? []).join(", ");
-  const signature = `func ${node.label}(${params})${returns ? " " + returns : ""}`;
+  const signature = isGDScript
+    ? `func ${node.label}(${params})${returns ? " -> " + returns : ""}:`
+    : `func ${node.label}(${params})${returns ? " " + returns : ""}`;
 
-  // Full source = signature + body (body already contains the braces from go/printer)
-  const fullSource = node.body ? `${signature} ${node.body}` : signature;
+  // Full source = signature + body
+  const fullSource = node.body
+    ? isGDScript ? `${signature}\n${node.body}` : `${signature} ${node.body}`
+    : signature;
+
+  const hlLang = isGDScript ? "python" : "go";
 
   return (
     <div
@@ -145,7 +155,7 @@ export function FunctionDetailPanel({ node, structNodes, onStructClick, onClose 
           Source
         </div>
         <SyntaxHighlighter
-          language="go"
+          language={hlLang}
           style={vscDarkPlus}
           customStyle={{
             margin: 0,

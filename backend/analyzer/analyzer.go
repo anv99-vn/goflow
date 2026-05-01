@@ -106,6 +106,7 @@ type StructEdge struct {
 
 // Graph is the full data flow graph
 type Graph struct {
+	Language      string        `json:"language"` // "go" or "gdscript"
 	Nodes         []Node        `json:"nodes"`
 	Edges         []Edge        `json:"edges"`
 	FunctionNodes []FuncNode    `json:"functionNodes"`
@@ -132,7 +133,7 @@ func Analyze(rootDir string) (*Graph, error) {
 		return nil, err
 	}
 
-	graph := &Graph{}
+	graph := &Graph{Language: "go"}
 	nodeMap := map[string]*Node{}
 	edgeSet := map[string]bool{}
 
@@ -464,12 +465,12 @@ func applyLayout(g *Graph) {
 		}
 	}
 
-	// Entrypoint (layer 0) on the right; deepest dependency on the left.
+	// Entrypoint (layer 0) on the left; deepest dependency on the right.
 	xSpacing := 250.0
 	ySpacing := 150.0
 	for layer, indices := range layerNodes {
 		for j, idx := range indices {
-			g.Nodes[idx].Position["x"] = float64(maxLayer-layer) * xSpacing
+			g.Nodes[idx].Position["x"] = float64(layer) * xSpacing
 			g.Nodes[idx].Position["y"] = float64(j) * ySpacing
 		}
 	}
@@ -672,12 +673,12 @@ func applyFuncLayout(nodes []FuncNode, edges []FuncEdge) {
 		layerNodes[l] = append(layerNodes[l], i)
 	}
 
-	// main (layer 0) on the right; deepest callee on the left.
+	// main (layer 0) on the left; deepest callee on the right.
 	xSpacing := 280.0
 	ySpacing := 160.0
 	for layer, indices := range layerNodes {
 		for j, idx := range indices {
-			nodes[idx].Position["x"] = float64(maxLayer-layer) * xSpacing
+			nodes[idx].Position["x"] = float64(layer) * xSpacing
 			nodes[idx].Position["y"] = float64(j) * ySpacing
 		}
 	}

@@ -25,19 +25,26 @@ const NODE_TYPES = {
   structNode: StructNodeComponent,
 };
 
-function graphToFlow(graph: Graph, selectedStruct?: StructNode | null): { nodes: Node[]; edges: Edge[] } {
+// ─── Graph helpers ────────────────────────────────────────────────────────────
+
+type SavedPositions = Record<string, { x: number; y: number }>;
+
+function graphToFlow(
+  graph: Graph,
+  savedPos: SavedPositions = {},
+  selectedStruct?: StructNode | null
+): { nodes: Node[]; edges: Edge[] } {
   const nodes: Node[] = (graph.nodes ?? []).map((n) => ({
     id: n.id,
     type: "packageNode",
-    position: n.position,
+    position: savedPos[n.id] ?? n.position,
     data: { ...n },
   }));
-
   (graph.structNodes ?? []).forEach((n) => {
     nodes.push({
       id: n.id,
       type: "structNode",
-      position: n.position,
+      position: savedPos[n.id] ?? n.position,
       data: { ...n, isActive: selectedStruct?.id === n.id },
     });
   });
@@ -52,7 +59,6 @@ function graphToFlow(graph: Graph, selectedStruct?: StructNode | null): { nodes:
     labelStyle: { fill: "#94a3b8", fontSize: 11 },
     labelBgStyle: { fill: "#0f172a" },
   }));
-
   (graph.structEdges ?? []).forEach((e) => {
     edges.push({
       id: e.id,
@@ -65,35 +71,18 @@ function graphToFlow(graph: Graph, selectedStruct?: StructNode | null): { nodes:
       labelBgStyle: { fill: "#1e1b4b" },
     });
   });
-
   return { nodes, edges };
 }
-
-// --- Saved positions (localStorage) ---
-const FUNC_POS_KEY = "goflow:func-positions";
-
-type SavedPositions = Record<string, { x: number; y: number }>;
-
-function loadFuncPositions(): SavedPositions {
-  try { return JSON.parse(localStorage.getItem(FUNC_POS_KEY) ?? "{}"); }
-  catch { return {}; }
-}
-
-function persistFuncPositions(pos: SavedPositions) {
-  localStorage.setItem(FUNC_POS_KEY, JSON.stringify(pos));
-}
-// ----------------------------------------
 
 function funcGraphToFlow(
   graph: Graph,
   savedPos: SavedPositions = {},
   activeId: string | null = null,
-  hiddenIds?: Set<string>,
+  hiddenIds: Set<string> = new Set(),
   deleteFunc?: (id: string) => void
 ): { nodes: Node[]; edges: Edge[] } {
-  const hidden = hiddenIds ?? new Set();
   const nodes: Node[] = (graph.functionNodes ?? [])
-    .filter((n) => !hidden.has(n.id))
+    .filter((n) => !hiddenIds.has(n.id))
     .map((n) => ({
       id: n.id,
       type: "functionNode",
@@ -101,9 +90,9 @@ function funcGraphToFlow(
       data: { ...n, isActive: n.id === activeId, onDelete: deleteFunc },
     }));
 
-  const visibleIds = new Set(nodes.map((n) => n.id));
+  const visible = new Set(nodes.map((n) => n.id));
   const edges: Edge[] = (graph.functionEdges ?? [])
-    .filter((e) => visibleIds.has(e.source) && visibleIds.has(e.target))
+    .filter((e) => visible.has(e.source) && visible.has(e.target))
     .map((e) => ({
       id: e.id,
       source: e.source,
@@ -114,213 +103,320 @@ function funcGraphToFlow(
       labelStyle: { fill: "#7dd3fc", fontSize: 11 },
       labelBgStyle: { fill: "#0c2540" },
     }));
-
   return { nodes, edges };
 }
 
-type Mode = "project" | "file";
+// ─── Types ────────────────────────────────────────────────────────────────────
+
+interface Project {
+  id: string;
+  name: string;
+  fileNames: string[];
+}
+
 type ViewMode = "package" | "function";
 
+// ─── Debounce helper ──────────────────────────────────────────────────────────
+
+function useDebounce<T extends (...args: any[]) => void>(fn: T, delay: number): T {
+  const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  return useCallback(
+    (...args: Parameters<T>) => {
+      if (timer.current) clearTimeout(timer.current);
+      timer.current = setTimeout(() => fn(...args), delay);
+    },
+    [fn, delay]
+  ) as T;
+}
+
+// ─── App ──────────────────────────────────────────────────────────────────────
+
 export default function App() {
-  const [mode, setMode] = useState<Mode>("project");
-  const [viewMode, setViewMode] = useState<ViewMode>("package");
+  // Projects (from backend)
+  const [projects, setProjects] = useState<Project[]>([]);
+  const [activeProjectId, setActiveProjectId] = useState<string | null>(null);
+  const [creatingProject, setCreatingProject] = useState(false);
+  const [newProjectName, setNewProjectName] = useState("");
+
+  // Graph state
   const [currentGraph, setCurrentGraph] = useState<Graph | null>(null);
-  const [pathInput, setPathInput] = useState("");
-  const [selectedFiles, setSelectedFiles] = useState<File[]>([]);
+  const [viewMode, setViewMode] = useState<ViewMode>("package");
+  const [savedPositions, setSavedPositions] = useState<SavedPositions>({});
+  const [hiddenFuncIds, setHiddenFuncIds] = useState<Set<string>>(new Set());
+  const [activeFuncId, setActiveFuncId] = useState<string | null>(null);
+
+  // UI state
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [selectedNode, setSelectedNode] = useState<PackageNode | null>(null);
   const [selectedFuncNode, setSelectedFuncNode] = useState<FuncNode | null>(null);
   const [selectedStructNode, setSelectedStructNode] = useState<StructNode | null>(null);
-  const [activeFuncId, setActiveFuncId] = useState<string | null>(null);
-  const [funcPositions, setFuncPositions] = useState<SavedPositions>(loadFuncPositions);
-  const [hiddenFuncIds, setHiddenFuncIds] = useState<Set<string>>(new Set());
-  const rfRef = useRef<any>(null); // ReactFlow instance ref for auto-pan
+
+  const rfRef = useRef<any>(null);
 
   const [nodes, setNodes, onNodesChange] = useNodesState<Node>([]);
   const [edges, setEdges, onEdgesChange] = useEdgesState<Edge>([]);
   const onConnect = useCallback(
-    (params: Connection) => setEdges((eds) => addEdge(params, eds)),
+    (p: Connection) => setEdges((eds) => addEdge(p, eds)),
     [setEdges]
   );
 
-  const deleteFuncNode = useCallback((id: string) => {
-    setHiddenFuncIds((prev) => {
-      const next = new Set(prev);
-      next.add(id);
-      return next;
-    });
-    // Close detail panel if viewing deleted node
-    if (activeFuncId === id) {
-      setSelectedFuncNode(null);
-      setActiveFuncId(null);
-    }
-  }, [activeFuncId]);
+  const activeProject = useMemo(
+    () => projects.find((p) => p.id === activeProjectId) ?? null,
+    [projects, activeProjectId]
+  );
 
-  // Re-apply graph when hiddenFuncIds changes
+  // ── Load projects on mount ───────────────────────────────────────────────
+
   useEffect(() => {
-    if (currentGraph && viewMode === "function") {
-      const { nodes: n, edges: e } = funcGraphToFlow(currentGraph, funcPositions, activeFuncId, hiddenFuncIds, deleteFuncNode);
-      setNodes(n);
-      setEdges(e);
-    }
-  }, [hiddenFuncIds, currentGraph, viewMode, funcPositions, activeFuncId, deleteFuncNode, setNodes, setEdges]);
+    fetch("/api/projects")
+      .then((r) => r.json())
+      .then((data: Project[]) => setProjects(data ?? []))
+      .catch(() => {});
+  }, []);
 
-  const applyGraph = useCallback(
-    (graph: Graph, vm: ViewMode = "package", savedPos?: SavedPositions) => {
+  // ── Graph application ────────────────────────────────────────────────────
+
+  const deleteFuncNode = useCallback(
+    (id: string) => {
+      setHiddenFuncIds((prev) => new Set([...prev, id]));
+      if (activeFuncId === id) {
+        setSelectedFuncNode(null);
+        setActiveFuncId(null);
+      }
+    },
+    [activeFuncId]
+  );
+
+  const applyGraphWithPositions = useCallback(
+    (graph: Graph, positions: SavedPositions, vm: ViewMode = "package") => {
       setCurrentGraph(graph);
-      const pos = savedPos ?? funcPositions;
       const { nodes: n, edges: e } =
-        vm === "function" ? funcGraphToFlow(graph, pos, activeFuncId, hiddenFuncIds, deleteFuncNode) : graphToFlow(graph, selectedStructNode);
+        vm === "function"
+          ? funcGraphToFlow(graph, positions, null, new Set(), deleteFuncNode)
+          : graphToFlow(graph, positions);
       setNodes(n);
       setEdges(e);
     },
-    [setNodes, setEdges, funcPositions, selectedStructNode, activeFuncId, hiddenFuncIds, deleteFuncNode]
+    [deleteFuncNode, setNodes, setEdges]
   );
 
-  const analyze = useCallback(async () => {
-    if (!pathInput.trim()) return;
-    setLoading(true);
-    setError("");
+  // ── Select project ───────────────────────────────────────────────────────
+
+  const selectProject = useCallback(async (id: string) => {
+    setActiveProjectId(id);
+    // Reset UI
     setSelectedNode(null);
     setSelectedFuncNode(null);
+    setSelectedStructNode(null);
+    setActiveFuncId(null);
+    setHiddenFuncIds(new Set());
+    setViewMode("package");
+    setError("");
+    setCurrentGraph(null);
+    setNodes([]);
+    setEdges([]);
 
     try {
-      const res = await fetch("/api/analyze", {
+      const [graphRaw, positions] = await Promise.all([
+        db.loadGraph(id),
+        db.loadPositions(id),
+      ]);
+      setSavedPositions(positions);
+      if (graphRaw) {
+        applyGraphWithPositions(graphRaw, positions, "package");
+      }
+    } catch {
+      /* project might have no graph yet */
+    }
+  }, [applyGraphWithPositions, setNodes, setEdges]);
+
+  // ── Create / delete project ──────────────────────────────────────────────
+
+  const createProject = useCallback(async () => {
+    const name = newProjectName.trim();
+    if (!name) return;
+    try {
+      const p: Project = await fetch("/api/projects", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ path: pathInput.trim() }),
-      });
-
-      if (!res.ok) {
-        const text = await res.text();
-        throw new Error(text || `HTTP ${res.status}`);
-      }
-
-      setViewMode("package");
-      applyGraph(await res.json(), "package");
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
-    } finally {
-      setLoading(false);
+        body: JSON.stringify({ name }),
+      }).then((r) => r.json());
+      setProjects((prev) => [...prev, p]);
+      setNewProjectName("");
+      setCreatingProject(false);
+      selectProject(p.id);
+    } catch (e) {
+      setError(String(e));
     }
-  }, [pathInput, applyGraph]);
+  }, [newProjectName, selectProject]);
 
-  const analyzeFiles = useCallback(
+  const deleteProject = useCallback(async (id: string) => {
+    await fetch(`/api/projects/${id}`, { method: "DELETE" });
+    setProjects((prev) => prev.filter((p) => p.id !== id));
+    if (activeProjectId === id) {
+      setActiveProjectId(null);
+      setCurrentGraph(null);
+      setNodes([]);
+      setEdges([]);
+    }
+  }, [activeProjectId, setNodes, setEdges]);
+
+  // ── File management ──────────────────────────────────────────────────────
+
+  const addFilesToProject = useCallback(
     async (files: File[]) => {
-      const goFiles = files.filter((f) => f.name.endsWith(".go"));
-      if (goFiles.length === 0) return;
+      if (!activeProjectId) return;
+      const supported = files.filter(
+        (f) => f.name.endsWith(".go") || f.name.endsWith(".gd")
+      );
+      if (supported.length === 0) return;
 
       setLoading(true);
       setError("");
-      setSelectedNode(null);
-
-      const formData = new FormData();
-      goFiles.forEach((f) => formData.append("file", f));
+      const form = new FormData();
+      supported.forEach((f) => form.append("file", f));
 
       try {
-        const res = await fetch("/api/analyze-file", {
-          method: "POST",
-          body: formData,
+        const res: { fileNames: string[]; graph: Graph } = await fetch(
+          `/api/projects/${activeProjectId}/files`,
+          { method: "POST", body: form }
+        ).then((r) => {
+          if (!r.ok) return r.text().then((t) => Promise.reject(t));
+          return r.json();
         });
 
-        if (!res.ok) {
-          const text = await res.text();
-          throw new Error(text || `HTTP ${res.status}`);
+        setProjects((prev) =>
+          prev.map((p) =>
+            p.id === activeProjectId ? { ...p, fileNames: res.fileNames } : p
+          )
+        );
+        if (res.graph) {
+          const positions = await db.loadPositions(activeProjectId);
+          setSavedPositions(positions);
+          setViewMode("package");
+          setHiddenFuncIds(new Set());
+          applyGraphWithPositions(res.graph, positions, "package");
         }
-
-        setViewMode("package");
-        applyGraph(await res.json(), "package");
-      } catch (err) {
-        setError(err instanceof Error ? err.message : String(err));
+      } catch (e) {
+        setError(String(e));
       } finally {
         setLoading(false);
       }
     },
-    [applyGraph]
+    [activeProjectId, applyGraphWithPositions]
   );
 
-  // Update node data when activeFuncId changes
-  useEffect(() => {
-    if (viewMode !== "function") return;
-    setNodes((nds) =>
-      nds.map((n) => ({
-        ...n,
-        data: { ...n.data, isActive: n.id === activeFuncId },
-      }))
-    );
-  }, [activeFuncId, viewMode, setNodes]);
+  const removeFileFromProject = useCallback(
+    async (fileName: string) => {
+      if (!activeProjectId) return;
+      setLoading(true);
+      setError("");
+      try {
+        const res: { fileNames: string[]; graph: Graph | null } = await fetch(
+          `/api/projects/${activeProjectId}/files/${encodeURIComponent(fileName)}`,
+          { method: "DELETE" }
+        ).then((r) => {
+          if (!r.ok) return r.text().then((t) => Promise.reject(t));
+          return r.json();
+        });
 
-  // Merge newly picked files with existing, deduplicate by name
-  const addFiles = useCallback((incoming: File[]) => {
-    const goFiles = incoming.filter((f) => f.name.endsWith(".go"));
-    if (goFiles.length === 0) return;
-    setSelectedFiles((prev) => {
-      const existingNames = new Set(prev.map((f) => f.name));
-      return [...prev, ...goFiles.filter((f) => !existingNames.has(f.name))];
-    });
-  }, []);
-
-  const removeFile = useCallback((name: string) => {
-    setSelectedFiles((prev) => prev.filter((f) => f.name !== name));
-  }, []);
-
-  // Re-analyze whenever the file list changes (add or remove)
-  useEffect(() => {
-    if (mode !== "file") return;
-    if (selectedFiles.length === 0) {
-      setNodes([]);
-      setEdges([]);
-      setCurrentGraph(null);
-      return;
-    }
-    analyzeFiles(selectedFiles);
-  }, [selectedFiles]); // eslint-disable-line react-hooks/exhaustive-deps
-
-  const handleFileChange = useCallback(
-    (e: React.ChangeEvent<HTMLInputElement>) => {
-      const files = Array.from(e.target.files ?? []);
-      addFiles(files);
-      e.target.value = ""; // reset so same file can be re-picked
+        setProjects((prev) =>
+          prev.map((p) =>
+            p.id === activeProjectId ? { ...p, fileNames: res.fileNames } : p
+          )
+        );
+        if (res.graph) {
+          const positions = await db.loadPositions(activeProjectId);
+          setSavedPositions(positions);
+          setViewMode("package");
+          setHiddenFuncIds(new Set());
+          applyGraphWithPositions(res.graph, positions, "package");
+        } else {
+          setCurrentGraph(null);
+          setNodes([]);
+          setEdges([]);
+        }
+      } catch (e) {
+        setError(String(e));
+      } finally {
+        setLoading(false);
+      }
     },
-    [addFiles]
+    [activeProjectId, applyGraphWithPositions, setNodes, setEdges]
   );
 
   const handleDrop = useCallback(
     (e: React.DragEvent<HTMLDivElement>) => {
       e.preventDefault();
-      addFiles(Array.from(e.dataTransfer.files));
+      addFilesToProject(Array.from(e.dataTransfer.files));
     },
-    [addFiles]
+    [addFilesToProject]
   );
+
+  // ── Position saving (debounced) ──────────────────────────────────────────
+
+  const savePositionsToBackend = useCallback(
+    async (id: string, pos: SavedPositions) => {
+      await fetch(`/api/projects/${id}/positions`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(pos),
+      });
+    },
+    []
+  );
+
+  const debouncedSavePositions = useDebounce(savePositionsToBackend, 800);
+
+  const onNodeDragStop = useCallback(
+    (_: React.MouseEvent, node: Node) => {
+      setSavedPositions((prev) => {
+        const next = { ...prev, [node.id]: node.position };
+        if (activeProjectId) debouncedSavePositions(activeProjectId, next);
+        return next;
+      });
+    },
+    [activeProjectId, debouncedSavePositions]
+  );
+
+  // ── Sync hidden/active func ──────────────────────────────────────────────
+
+  useEffect(() => {
+    if (!currentGraph || viewMode !== "function") return;
+    const { nodes: n, edges: e } = funcGraphToFlow(
+      currentGraph,
+      savedPositions,
+      activeFuncId,
+      hiddenFuncIds,
+      deleteFuncNode
+    );
+    setNodes(n);
+    setEdges(e);
+  }, [hiddenFuncIds]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  useEffect(() => {
+    if (viewMode !== "function") return;
+    setNodes((nds) =>
+      nds.map((n) => ({ ...n, data: { ...n.data, isActive: n.id === activeFuncId } }))
+    );
+  }, [activeFuncId, viewMode, setNodes]);
+
+  // ── Interaction ──────────────────────────────────────────────────────────
 
   const onNodeClick = useCallback((_: React.MouseEvent, node: Node) => {
     if (node.type === "functionNode") {
       setSelectedFuncNode(node.data as unknown as FuncNode);
       setActiveFuncId(node.id);
       setSelectedNode(null);
-      // Don't clear selectedStructNode - keep it open if already viewing
 
-      // Auto-pan to keep node visible when detail panel opens
-      const instance = rfRef.current;
-      if (instance) {
-        const viewport = instance.getViewport();
-        const zoom = viewport.zoom;
-
-        // Calculate node's current screen X position
-        const nodeScreenX = (node.position.x * zoom) + viewport.x;
-
-        // Detail panel starts at ~470px from right (420 minWidth + 16 right + padding)
-        const panelStartX = window.innerWidth - 470;
-
-        // If node would be hidden behind panel, pan left
-        if (nodeScreenX > panelStartX) {
-          // Place node at ~35% of viewport width for comfortable viewing
-          const targetScreenX = window.innerWidth * 0.35;
-          const newViewportX = targetScreenX - (node.position.x * zoom);
-
-          instance.setViewport(
-            { x: newViewportX, y: viewport.y, zoom: viewport.zoom },
+      const inst = rfRef.current;
+      if (inst) {
+        const vp = inst.getViewport();
+        const screenX = node.position.x * vp.zoom + vp.x;
+        if (screenX > window.innerWidth - 470) {
+          inst.setViewport(
+            { x: window.innerWidth * 0.35 - node.position.x * vp.zoom, y: vp.y, zoom: vp.zoom },
             { duration: 300 }
           );
         }
@@ -338,442 +434,429 @@ export default function App() {
     }
   }, []);
 
-  const handleStructClick = useCallback((structNode: StructNode) => {
-    setSelectedStructNode(structNode);
-  }, []);
+  const handleStructClick = useCallback((s: StructNode) => setSelectedStructNode(s), []);
 
-  const onNodeDragStop = useCallback((_: React.MouseEvent, node: Node) => {
-    if (node.type !== "functionNode") return;
-    setFuncPositions((prev) => {
-      const next = { ...prev, [node.id]: node.position };
-      persistFuncPositions(next);
-      return next;
-    });
-  }, []);
+  const switchViewMode = useCallback(
+    (vm: ViewMode) => {
+      if (!currentGraph) return;
+      setViewMode(vm);
+      setSelectedNode(null);
+      setSelectedFuncNode(null);
+      setActiveFuncId(null);
+      setSelectedStructNode(null);
+      const { nodes: n, edges: e } =
+        vm === "function"
+          ? funcGraphToFlow(currentGraph, savedPositions, null, hiddenFuncIds, deleteFuncNode)
+          : graphToFlow(currentGraph, savedPositions);
+      setNodes(n);
+      setEdges(e);
+    },
+    [currentGraph, savedPositions, hiddenFuncIds, deleteFuncNode, setNodes, setEdges]
+  );
 
-  const stats = useMemo(() => {
-    const entrypoints = nodes.filter((n) => (n.data as any).type === "entrypoint").length;
-    const packages = nodes.filter((n) => (n.data as any).type === "package").length;
-    const structs = nodes.filter((n) => n.type === "structNode").length;
-    const hidden = hiddenFuncIds.size;
-    return { entrypoints, packages, structs, hidden, edges: edges.length };
-  }, [nodes, edges, hiddenFuncIds]);
+  const stats = useMemo(() => ({
+    entrypoints: nodes.filter((n) => (n.data as any).type === "entrypoint").length,
+    packages: nodes.filter((n) => (n.data as any).type === "package").length,
+    structs: nodes.filter((n) => n.type === "structNode").length,
+    hidden: hiddenFuncIds.size,
+    edges: edges.length,
+  }), [nodes, edges, hiddenFuncIds]);
 
-  const switchMode = (m: Mode) => {
-    setMode(m);
-    setViewMode("package");
-    setCurrentGraph(null);
-    setError("");
-    setSelectedNode(null);
-    setSelectedFuncNode(null);
-    setNodes([]);
-    setEdges([]);
-    setSelectedFiles([]);
-  };
+  const isGDScript = currentGraph?.language === "gdscript";
 
-  const switchViewMode = (vm: ViewMode) => {
-    if (!currentGraph) return;
-    setViewMode(vm);
-    setSelectedNode(null);
-    setSelectedFuncNode(null);
-    setActiveFuncId(null);
-    setSelectedStructNode(null);
-    const { nodes: n, edges: e } =
-      vm === "function" ? funcGraphToFlow(currentGraph, funcPositions, activeFuncId) : graphToFlow(currentGraph, selectedStructNode);
-    setNodes(n);
-    setEdges(e);
-  };
+  // ── Render ───────────────────────────────────────────────────────────────
 
   return (
     <div style={{ width: "100vw", height: "100vh", background: "#020617", display: "flex", flexDirection: "column" }}>
-      {/* Header */}
-      <div
-        style={{
-          padding: "12px 24px",
-          background: "#0f172a",
-          borderBottom: "1px solid #1e293b",
-          display: "flex",
-          alignItems: "center",
-          gap: 16,
-          flexShrink: 0,
-        }}
-      >
-        <div style={{ fontWeight: 800, fontSize: 18, color: "#7dd3fc", letterSpacing: -0.5 }}>
-          GoFlow
-        </div>
-        <div style={{ color: "#475569", fontSize: 13 }}>Go Data Flow Visualizer</div>
+      {/* Top bar */}
+      <div style={{
+        height: 48, padding: "0 20px", background: "#0f172a",
+        borderBottom: "1px solid #1e293b", display: "flex", alignItems: "center",
+        gap: 14, flexShrink: 0,
+      }}>
+        <span style={{ fontWeight: 800, fontSize: 17, color: "#7dd3fc", letterSpacing: -0.5 }}>GoFlow</span>
+
+        {currentGraph && (
+          <span style={{
+            fontSize: 11, fontWeight: 600,
+            background: isGDScript ? "#1a1040" : "#0c1a2e",
+            color: isGDScript ? "#c084fc" : "#38bdf8",
+            border: `1px solid ${isGDScript ? "#7c3aed" : "#0ea5e9"}`,
+            borderRadius: 4, padding: "2px 8px",
+          }}>
+            {isGDScript ? "GDScript" : "Go"}
+          </span>
+        )}
 
         <div style={{ flex: 1 }} />
 
-        {/* Mode tabs */}
-        <div
-          style={{
-            display: "flex",
-            background: "#1e293b",
-            borderRadius: 8,
-            padding: 3,
-            gap: 2,
-          }}
-        >
-          <ModeTab label="Project" active={mode === "project"} onClick={() => switchMode("project")} />
-          <ModeTab label="Go Files" active={mode === "file"} onClick={() => switchMode("file")} />
-        </div>
-
-        {mode === "project" ? (
-          <>
-            <input
-              type="text"
-              value={pathInput}
-              onChange={(e) => setPathInput(e.target.value)}
-              onKeyDown={(e) => e.key === "Enter" && analyze()}
-              placeholder="Path to Go project (e.g. C:/myproject)"
-              style={{
-                background: "#1e293b",
-                border: "1px solid #334155",
-                borderRadius: 8,
-                padding: "8px 14px",
-                color: "#f1f5f9",
-                fontSize: 13,
-                width: 320,
-                outline: "none",
-              }}
-            />
-            <button
-              onClick={analyze}
-              disabled={loading || !pathInput.trim()}
-              style={{
-                background: loading ? "#334155" : "#6366f1",
-                color: "#fff",
-                border: "none",
-                borderRadius: 8,
-                padding: "8px 20px",
-                fontWeight: 600,
-                fontSize: 13,
-                cursor: loading ? "not-allowed" : "pointer",
-                transition: "background 0.2s",
-              }}
-            >
-              {loading ? "Analyzing..." : "Analyze"}
-            </button>
-          </>
-        ) : (
-          <>
-            <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
-              {/* Folder upload */}
-              <label
-                style={{
-                  background: loading ? "#334155" : "#0ea5e9",
-                  color: "#fff",
-                  borderRadius: 8,
-                  padding: "8px 20px",
-                  fontWeight: 600,
-                  fontSize: 13,
-                  cursor: loading ? "not-allowed" : "pointer",
-                  transition: "background 0.2s",
-                  display: "flex",
-                  alignItems: "center",
-                  gap: 8,
-                  flexShrink: 0,
-                  userSelect: "none",
-                }}
-              >
-                <input
-                  type="file"
-                  // @ts-ignore
-                  webkitdirectory=""
-                  onChange={handleFileChange}
-                  disabled={loading}
-                  style={{ display: "none" }}
-                />
-                <span style={{ fontSize: 15 }}>📁</span>
-                Upload Folder
-              </label>
-
-              {/* Multiple files upload */}
-              <label
-                style={{
-                  background: loading ? "#334155" : "#0ea5e9",
-                  color: "#fff",
-                  borderRadius: 8,
-                  padding: "8px 20px",
-                  fontWeight: 600,
-                  fontSize: 13,
-                  cursor: loading ? "not-allowed" : "pointer",
-                  transition: "background 0.2s",
-                  display: "flex",
-                  alignItems: "center",
-                  gap: 8,
-                  flexShrink: 0,
-                  userSelect: "none",
-                }}
-              >
-                <input
-                  type="file"
-                  multiple
-                  onChange={handleFileChange}
-                  disabled={loading}
-                  style={{ display: "none" }}
-                />
-                <span style={{ fontSize: 15 }}>📄</span>
-                Upload Files
-              </label>
-            </div>
-
-            {selectedFiles.length > 0 && (
-              <div style={{ display: "flex", alignItems: "center", gap: 5, flexWrap: "wrap", maxWidth: 480 }}>
-                {selectedFiles.map((f) => (
-                  <span
-                    key={f.name}
-                    style={{
-                      display: "flex",
-                      alignItems: "center",
-                      gap: 4,
-                      color: "#7dd3fc",
-                      fontSize: 12,
-                      background: "#0c2540",
-                      border: "1px solid #1e4a7a",
-                      borderRadius: 5,
-                      padding: "3px 6px 3px 8px",
-                      maxWidth: 180,
-                    }}
-                    title={f.name}
-                  >
-                    <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                      {f.name}
-                    </span>
-                    <button
-                      onClick={() => removeFile(f.name)}
-                      disabled={loading}
-                      style={{
-                        background: "none",
-                        border: "none",
-                        color: "#475569",
-                        cursor: loading ? "not-allowed" : "pointer",
-                        padding: 0,
-                        fontSize: 13,
-                        lineHeight: 1,
-                        flexShrink: 0,
-                      }}
-                      title={`Remove ${f.name}`}
-                    >
-                      ✕
-                    </button>
-                  </span>
-                ))}
-              </div>
+        {/* Stats */}
+        {nodes.length > 0 && (
+          <div style={{ display: "flex", alignItems: "center", gap: 14, fontSize: 12, color: "#64748b" }}>
+            <StatBadge label="entrypoints" value={stats.entrypoints} color="#6366f1" />
+            <StatBadge label={isGDScript ? "scripts" : "packages"} value={stats.packages} color="#0ea5e9" />
+            {stats.structs > 0 && (
+              <StatBadge label={isGDScript ? "classes" : "structs"} value={stats.structs} color="#a78bfa" />
             )}
-          </>
+            {stats.hidden > 0 && (
+              <button onClick={() => setHiddenFuncIds(new Set())}
+                style={{ background: "#dc2626", color: "#fff", border: "none", borderRadius: 5, padding: "2px 8px", fontSize: 11, cursor: "pointer", fontWeight: 600 }}>
+                restore {stats.hidden} hidden
+              </button>
+            )}
+            <StatBadge label="edges" value={stats.edges} color="#475569" />
+          </div>
+        )}
+
+        {/* View mode */}
+        {currentGraph && (currentGraph.functionNodes ?? []).length > 0 && (
+          <div style={{ display: "flex", background: "#1e293b", borderRadius: 7, padding: 2, gap: 2 }}>
+            <ViewTab label="Package" active={viewMode === "package"} onClick={() => switchViewMode("package")} />
+            <ViewTab label="Function" active={viewMode === "function"} onClick={() => switchViewMode("function")} />
+          </div>
         )}
       </div>
 
-      {/* Stats bar */}
-      {nodes.length > 0 && (
-        <div
-          style={{
-            padding: "6px 24px",
-            background: "#0f172a",
-            borderBottom: "1px solid #1e293b",
-            display: "flex",
-            alignItems: "center",
-            gap: 24,
-            fontSize: 12,
-            color: "#64748b",
-            flexShrink: 0,
-          }}
-        >
-          <StatBadge label="entrypoints" value={stats.entrypoints} color="#6366f1" />
-          <StatBadge label="packages" value={stats.packages} color="#0ea5e9" />
-          {stats.structs > 0 && <StatBadge label="structs" value={stats.structs} color="#a78bfa" />}
-          {stats.hidden > 0 && (
-            <button
-              onClick={() => setHiddenFuncIds(new Set())}
-              style={{
-                background: "#dc2626",
-                color: "#fff",
-                border: "none",
-                borderRadius: 5,
-                padding: "2px 8px",
-                fontSize: 11,
-                cursor: "pointer",
-                fontWeight: 600,
-              }}
-              title="Restore all hidden functions"
-            >
-              restore {stats.hidden} hidden
-            </button>
-          )}
-          <StatBadge label="edges" value={stats.edges} color="#475569" />
+      {/* Body */}
+      <div style={{ flex: 1, display: "flex", overflow: "hidden" }}>
 
-          <div style={{ flex: 1 }} />
+        {/* ── Sidebar ─────────────────────────────────────────────────── */}
+        <div style={{
+          width: 220, background: "#0a1120", borderRight: "1px solid #1e293b",
+          display: "flex", flexDirection: "column", flexShrink: 0,
+        }}>
+          <div style={{ padding: "14px 14px 6px", fontSize: 11, fontWeight: 700, color: "#475569", letterSpacing: 1, textTransform: "uppercase" }}>
+            Projects
+          </div>
 
-          {/* View mode toggle */}
-          {currentGraph && (currentGraph.functionNodes ?? []).length > 0 && (
-            <div style={{ display: "flex", background: "#1e293b", borderRadius: 7, padding: 2, gap: 2 }}>
-              <ViewTab label="Package" active={viewMode === "package"} onClick={() => switchViewMode("package")} />
-              <ViewTab label="Function" active={viewMode === "function"} onClick={() => switchViewMode("function")} />
+          <div style={{ flex: 1, overflowY: "auto" }}>
+            {projects.map((p) => (
+              <ProjectItem
+                key={p.id}
+                project={p}
+                active={p.id === activeProjectId}
+                onSelect={() => selectProject(p.id)}
+                onDelete={() => deleteProject(p.id)}
+              />
+            ))}
+            {projects.length === 0 && !creatingProject && (
+              <div style={{ padding: "20px 16px", color: "#334155", fontSize: 12, textAlign: "center" }}>
+                No projects yet
+              </div>
+            )}
+          </div>
+
+          {/* New project */}
+          <div style={{ padding: "10px 10px 14px", borderTop: "1px solid #1e293b" }}>
+            {creatingProject ? (
+              <form onSubmit={(e) => { e.preventDefault(); createProject(); }}
+                style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                <input
+                  autoFocus
+                  value={newProjectName}
+                  onChange={(e) => setNewProjectName(e.target.value)}
+                  placeholder="Project name…"
+                  style={{
+                    background: "#1e293b", border: "1px solid #334155", borderRadius: 6,
+                    padding: "6px 10px", color: "#f1f5f9", fontSize: 12,
+                    outline: "none", width: "100%", boxSizing: "border-box",
+                  }}
+                />
+                <div style={{ display: "flex", gap: 6 }}>
+                  <button type="submit" disabled={!newProjectName.trim()}
+                    style={{
+                      flex: 1, background: newProjectName.trim() ? "#6366f1" : "#1e293b",
+                      color: newProjectName.trim() ? "#fff" : "#475569",
+                      border: "none", borderRadius: 6, padding: "6px 0",
+                      fontSize: 12, fontWeight: 600,
+                      cursor: newProjectName.trim() ? "pointer" : "not-allowed",
+                    }}>
+                    Create
+                  </button>
+                  <button type="button"
+                    onClick={() => { setCreatingProject(false); setNewProjectName(""); }}
+                    style={{
+                      background: "none", border: "1px solid #334155", borderRadius: 6,
+                      padding: "6px 10px", fontSize: 12, color: "#64748b", cursor: "pointer",
+                    }}>
+                    Cancel
+                  </button>
+                </div>
+              </form>
+            ) : (
+              <button
+                onClick={() => setCreatingProject(true)}
+                style={{
+                  width: "100%", background: "none", border: "1px dashed #334155",
+                  borderRadius: 6, padding: "7px 0", fontSize: 12, color: "#64748b",
+                  cursor: "pointer", display: "flex", alignItems: "center",
+                  justifyContent: "center", gap: 6, transition: "all 0.15s",
+                }}
+                onMouseEnter={(e) => { e.currentTarget.style.borderColor = "#6366f1"; e.currentTarget.style.color = "#818cf8"; }}
+                onMouseLeave={(e) => { e.currentTarget.style.borderColor = "#334155"; e.currentTarget.style.color = "#64748b"; }}
+              >
+                + New Project
+              </button>
+            )}
+          </div>
+        </div>
+
+        {/* ── Main area ───────────────────────────────────────────────── */}
+        <div style={{ flex: 1, display: "flex", flexDirection: "column", overflow: "hidden" }}>
+          {activeProject ? (
+            <>
+              {/* File bar */}
+              <div
+                style={{
+                  padding: "7px 14px", background: "#0f172a", borderBottom: "1px solid #1e293b",
+                  display: "flex", alignItems: "center", gap: 8, flexShrink: 0,
+                  flexWrap: "wrap", minHeight: 44,
+                }}
+                onDragOver={(e) => e.preventDefault()}
+                onDrop={handleDrop}
+              >
+                <UploadButton label="📁 Folder" loading={loading} onFiles={addFilesToProject} folder />
+                <UploadButton label="📄 Files" loading={loading} onFiles={addFilesToProject} />
+
+                {activeProject.fileNames.map((name) => (
+                  <FileChip key={name} name={name} disabled={loading}
+                    onRemove={() => removeFileFromProject(name)} />
+                ))}
+
+                {activeProject.fileNames.length === 0 && (
+                  <span style={{ fontSize: 12, color: "#334155", marginLeft: 4 }}>
+                    Add .go or .gd files · drag & drop supported
+                  </span>
+                )}
+              </div>
+
+              {/* Error */}
+              {error && (
+                <div style={{
+                  background: "#450a0a", border: "1px solid #7f1d1d",
+                  color: "#fca5a5", padding: "8px 16px", fontSize: 13, flexShrink: 0,
+                }}>
+                  {error}
+                </div>
+              )}
+
+              {/* Graph canvas */}
+              <div style={{ flex: 1, position: "relative" }}>
+                {nodes.length === 0 && !loading && !error && (
+                  <div style={{
+                    position: "absolute", inset: 0, display: "flex", flexDirection: "column",
+                    alignItems: "center", justifyContent: "center", color: "#334155",
+                    gap: 12, pointerEvents: "none",
+                  }}>
+                    <div style={{ fontSize: 48 }}>📄</div>
+                    <div style={{ fontSize: 15, fontWeight: 600 }}>
+                      Add files to "{activeProject.name}"
+                    </div>
+                    <div style={{ fontSize: 13 }}>Supports .go and .gd · drop anywhere in the file bar</div>
+                  </div>
+                )}
+
+                {loading && (
+                  <div style={{
+                    position: "absolute", inset: 0, display: "flex", alignItems: "center",
+                    justifyContent: "center", background: "rgba(2,6,23,0.6)", zIndex: 10,
+                    color: "#7dd3fc", fontSize: 15, fontWeight: 600, gap: 10,
+                  }}>
+                    <span style={{ animation: "spin 1s linear infinite", display: "inline-block" }}>⟳</span>
+                    Analyzing…
+                  </div>
+                )}
+
+                <ReactFlow
+                  nodes={nodes} edges={edges}
+                  onNodesChange={onNodesChange} onEdgesChange={onEdgesChange}
+                  onConnect={onConnect} onNodeClick={onNodeClick}
+                  onNodeDragStop={onNodeDragStop}
+                  nodeTypes={NODE_TYPES}
+                  fitView fitViewOptions={{ padding: 0.2 }}
+                  colorMode="dark"
+                  onInit={(i) => { rfRef.current = i; }}
+                >
+                  <Background color="#1e293b" gap={24} />
+                  <Controls />
+                  <MiniMap
+                    nodeColor={(n) => {
+                      if (n.type === "structNode") return "#a78bfa";
+                      const t = (n.data as any)?.type;
+                      if (t === "entrypoint") return "#6366f1";
+                      if (t === "external") return "#475569";
+                      return "#0ea5e9";
+                    }}
+                    style={{ background: "#0f172a", border: "1px solid #1e293b" }}
+                  />
+                </ReactFlow>
+
+                <DetailPanel node={selectedNode} onClose={() => setSelectedNode(null)} />
+                <FunctionDetailPanel
+                  node={selectedFuncNode}
+                  structNodes={currentGraph?.structNodes ?? []}
+                  language={currentGraph?.language ?? "go"}
+                  onStructClick={handleStructClick}
+                  onClose={() => { setSelectedFuncNode(null); setActiveFuncId(null); }}
+                />
+                <StructDetailPanel
+                  node={selectedStructNode}
+                  isFromFunction={!!selectedFuncNode}
+                  onClose={() => setSelectedStructNode(null)}
+                />
+              </div>
+            </>
+          ) : (
+            <div style={{
+              flex: 1, display: "flex", flexDirection: "column",
+              alignItems: "center", justifyContent: "center", color: "#334155", gap: 16,
+            }}>
+              <div style={{ fontSize: 56 }}>⬡</div>
+              <div style={{ fontSize: 17, fontWeight: 600, color: "#475569" }}>
+                {projects.length === 0 ? "Create a project to get started" : "Select a project from the sidebar"}
+              </div>
+              <div style={{ fontSize: 13 }}>
+                {projects.length === 0
+                  ? "Projects group your files together for analysis"
+                  : `${projects.length} project${projects.length > 1 ? "s" : ""} available`}
+              </div>
+              {projects.length === 0 && (
+                <button onClick={() => setCreatingProject(true)}
+                  style={{
+                    marginTop: 8, background: "#6366f1", color: "#fff",
+                    border: "none", borderRadius: 8, padding: "10px 24px",
+                    fontSize: 14, fontWeight: 600, cursor: "pointer",
+                  }}>
+                  + New Project
+                </button>
+              )}
             </div>
           )}
         </div>
-      )}
-
-      {/* Error */}
-      {error && (
-        <div
-          style={{
-            background: "#450a0a",
-            border: "1px solid #7f1d1d",
-            color: "#fca5a5",
-            padding: "10px 24px",
-            fontSize: 13,
-          }}
-        >
-          {error}
-        </div>
-      )}
-
-      {/* Canvas */}
-      <div
-        style={{ flex: 1, position: "relative" }}
-        onDragOver={(e) => mode === "file" && e.preventDefault()}
-        onDrop={(e) => mode === "file" && handleDrop(e)}
-      >
-        {nodes.length === 0 && !loading && !error && (
-          <div
-            style={{
-              position: "absolute",
-              inset: 0,
-              display: "flex",
-              flexDirection: "column",
-              alignItems: "center",
-              justifyContent: "center",
-              color: "#334155",
-              gap: 12,
-            }}
-          >
-            <div style={{ fontSize: 48 }}>{mode === "file" ? "📄" : "⬡"}</div>
-            {mode === "project" ? (
-              <>
-                <div style={{ fontSize: 16, fontWeight: 600 }}>Enter a Go project path to visualize its data flow</div>
-                <div style={{ fontSize: 13 }}>Auto-detects func main as entry point · Groups by package</div>
-              </>
-            ) : (
-              <>
-                <div style={{ fontSize: 16, fontWeight: 600 }}>Choose .go files to visualize their data flow</div>
-                <div style={{ fontSize: 13 }}>Click "Upload Folder" or "Upload Files" above · Or drag & drop files/folders here</div>
-              </>
-            )}
-          </div>
-        )}
-
-        {loading && (
-          <div
-            style={{
-              position: "absolute",
-              inset: 0,
-              display: "flex",
-              alignItems: "center",
-              justifyContent: "center",
-              background: "rgba(2,6,23,0.6)",
-              zIndex: 10,
-              color: "#7dd3fc",
-              fontSize: 15,
-              fontWeight: 600,
-              gap: 10,
-            }}
-          >
-            <span style={{ animation: "spin 1s linear infinite", display: "inline-block" }}>⟳</span>
-            Analyzing...
-          </div>
-        )}
-
-        <ReactFlow
-          nodes={nodes}
-          edges={edges}
-          onNodesChange={onNodesChange}
-          onEdgesChange={onEdgesChange}
-          onConnect={onConnect}
-          onNodeClick={onNodeClick}
-          onNodeDragStop={onNodeDragStop}
-          nodeTypes={NODE_TYPES}
-          fitView
-          fitViewOptions={{ padding: 0.2 }}
-          colorMode="dark"
-          onInit={(instance) => { rfRef.current = instance; }}
-        >
-          <Background color="#1e293b" gap={24} />
-          <Controls />
-          <MiniMap
-            nodeColor={(n) => {
-              if (n.type === "structNode") return "#a78bfa";
-              const t = (n.data as any)?.type;
-              if (t === "entrypoint") return "#6366f1";
-              if (t === "external") return "#475569";
-              return "#0ea5e9";
-            }}
-            style={{ background: "#0f172a", border: "1px solid #1e293b" }}
-          />
-        </ReactFlow>
-
-        <DetailPanel
-          node={selectedNode}
-          onClose={() => setSelectedNode(null)}
-        />
-        <FunctionDetailPanel
-          node={selectedFuncNode}
-          structNodes={currentGraph?.structNodes ?? []}
-          onStructClick={handleStructClick}
-          onClose={() => {
-            setSelectedFuncNode(null);
-            setActiveFuncId(null);
-          }}
-        />
-        <StructDetailPanel
-          node={selectedStructNode}
-          isFromFunction={!!selectedFuncNode}
-          onClose={() => setSelectedStructNode(null)}
-        />
       </div>
     </div>
   );
 }
 
-function ViewTab({ label, active, onClick }: { label: string; active: boolean; onClick: () => void }) {
+// ─── Backend API client ───────────────────────────────────────────────────────
+
+const db = {
+  async loadGraph(id: string): Promise<Graph | null> {
+    const r = await fetch(`/api/projects/${id}/graph`);
+    if (!r.ok || r.status === 204) return null;
+    return r.json();
+  },
+  async loadPositions(id: string): Promise<SavedPositions> {
+    const r = await fetch(`/api/projects/${id}/positions`);
+    if (!r.ok) return {};
+    return r.json();
+  },
+};
+
+// ─── Sub-components ───────────────────────────────────────────────────────────
+
+function ProjectItem({
+  project, active, onSelect, onDelete,
+}: {
+  project: Project; active: boolean;
+  onSelect: () => void; onDelete: () => void;
+}) {
+  const [hovered, setHovered] = useState(false);
   return (
-    <button
-      onClick={onClick}
+    <div
+      onClick={onSelect}
+      onMouseEnter={() => setHovered(true)}
+      onMouseLeave={() => setHovered(false)}
       style={{
-        background: active ? "#334155" : "transparent",
-        color: active ? "#7dd3fc" : "#64748b",
-        border: "none",
-        borderRadius: 5,
-        padding: "4px 10px",
-        fontSize: 11,
-        fontWeight: active ? 600 : 400,
+        padding: "8px 14px", display: "flex", alignItems: "center", gap: 8,
         cursor: "pointer",
-        transition: "all 0.15s",
+        background: active ? "#1e293b" : hovered ? "#111827" : "transparent",
+        borderLeft: `2px solid ${active ? "#6366f1" : "transparent"}`,
+        transition: "all 0.1s",
       }}
     >
-      {label}
-    </button>
+      <span style={{ fontSize: 13 }}>📁</span>
+      <span style={{
+        flex: 1, fontSize: 13, fontWeight: active ? 600 : 400,
+        color: active ? "#e2e8f0" : "#94a3b8",
+        overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
+      }}>
+        {project.name}
+      </span>
+      {project.fileNames.length > 0 && (
+        <span style={{
+          fontSize: 10, background: "#1e293b", color: "#475569",
+          borderRadius: 10, padding: "1px 6px", flexShrink: 0,
+        }}>
+          {project.fileNames.length}
+        </span>
+      )}
+      {(hovered || active) && (
+        <button
+          onClick={(e) => { e.stopPropagation(); onDelete(); }}
+          style={{ background: "none", border: "none", color: "#475569", cursor: "pointer", fontSize: 13, lineHeight: 1, padding: 2, flexShrink: 0 }}
+          title="Delete project"
+        >✕</button>
+      )}
+    </div>
   );
 }
 
-function ModeTab({ label, active, onClick }: { label: string; active: boolean; onClick: () => void }) {
+function UploadButton({ label, loading, onFiles, folder }: {
+  label: string; loading: boolean;
+  onFiles: (files: File[]) => void; folder?: boolean;
+}) {
   return (
-    <button
-      onClick={onClick}
+    <label style={{
+      background: loading ? "#1e293b" : "#0ea5e9",
+      color: loading ? "#475569" : "#fff",
+      borderRadius: 6, padding: "5px 12px", fontSize: 12, fontWeight: 600,
+      cursor: loading ? "not-allowed" : "pointer",
+      display: "flex", alignItems: "center", gap: 5,
+      flexShrink: 0, userSelect: "none", transition: "background 0.15s",
+    }}>
+      <input
+        type="file" multiple={!folder} accept=".go,.gd"
+        disabled={loading} style={{ display: "none" }}
+        // @ts-ignore
+        {...(folder ? { webkitdirectory: "" } : {})}
+        onChange={(e) => { onFiles(Array.from(e.target.files ?? [])); e.target.value = ""; }}
+      />
+      {label}
+    </label>
+  );
+}
+
+function FileChip({ name, disabled, onRemove }: {
+  name: string; disabled: boolean; onRemove: () => void;
+}) {
+  const gd = name.endsWith(".gd");
+  return (
+    <span style={{
+      display: "flex", alignItems: "center", gap: 4,
+      color: gd ? "#c084fc" : "#7dd3fc", fontSize: 12,
+      background: gd ? "#1a1040" : "#0c2540",
+      border: `1px solid ${gd ? "#7c3aed" : "#1e4a7a"}`,
+      borderRadius: 5, padding: "3px 6px 3px 8px", maxWidth: 180,
+    }} title={name}>
+      <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{name}</span>
+      <button onClick={onRemove} disabled={disabled}
+        style={{ background: "none", border: "none", color: "#475569", cursor: disabled ? "not-allowed" : "pointer", padding: 0, fontSize: 12, lineHeight: 1, flexShrink: 0 }}
+        title={`Remove ${name}`}>✕</button>
+    </span>
+  );
+}
+
+function ViewTab({ label, active, onClick }: { label: string; active: boolean; onClick: () => void }) {
+  return (
+    <button onClick={onClick}
       style={{
         background: active ? "#334155" : "transparent",
-        color: active ? "#f1f5f9" : "#64748b",
-        border: "none",
-        borderRadius: 6,
-        padding: "5px 12px",
-        fontSize: 12,
-        fontWeight: active ? 600 : 400,
-        cursor: "pointer",
-        transition: "all 0.15s",
-      }}
-    >
+        color: active ? "#7dd3fc" : "#64748b",
+        border: "none", borderRadius: 5, padding: "4px 10px",
+        fontSize: 11, fontWeight: active ? 600 : 400,
+        cursor: "pointer", transition: "all 0.15s",
+      }}>
       {label}
     </button>
   );

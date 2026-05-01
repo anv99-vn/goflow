@@ -6,6 +6,8 @@ import {
   MiniMap,
   addEdge,
   MarkerType,
+  useNodesState,
+  useEdgesState,
 } from "@xyflow/react";
 import type { Connection, Edge, Node } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
@@ -126,7 +128,7 @@ interface HistoryState {
 
 // ─── Debounce helper ──────────────────────────────────────────────────────────
 
-function useDebounce<T extends (...args: unknown[]) => void>(fn: T, delay: number): T {
+function useDebounce<T extends (...args: any[]) => void>(fn: T, delay: number): T {
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
   return useCallback(
     (...args: Parameters<T>) => {
@@ -161,6 +163,19 @@ export default function App() {
   const isUndoingRef = useRef<boolean>(false);
   const rfRef = useRef<{ getViewport: () => { x: number; y: number; zoom: number }; setViewport: (vp: { x: number; y: number; zoom: number }, opts?: { duration: number }) => void } | null>(null);
   const dragStartState = useRef<HistoryState | null>(null);
+
+  // React Flow state
+  const [nodes, setNodes, onNodesChange] = useNodesState([] as Node[]);
+  const [edges, setEdges, onEdgesChange] = useEdgesState([] as Edge[]);
+
+  // Selection state
+  const [selectedNode, setSelectedNode] = useState<PackageNode | null>(null);
+  const [selectedFuncNode, setSelectedFuncNode] = useState<FuncNode | null>(null);
+  const [selectedStructNode, setSelectedStructNode] = useState<StructNode | null>(null);
+
+  // UI state
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
   // Capture current state for history
   const captureState = useCallback((): HistoryState => ({
@@ -564,7 +579,7 @@ export default function App() {
 
   // onNodeDragStart — capture state before drag for undo
   const onNodeDragStart = useCallback(
-    (_: React.MouseEvent, node: Node) => {
+    (_: React.MouseEvent) => {
       dragStartState.current = captureState();
     },
     [captureState]
